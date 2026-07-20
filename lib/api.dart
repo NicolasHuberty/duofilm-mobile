@@ -6,11 +6,11 @@ const supabaseAnonKey = 'sb_publishable_VwgG_Pvvhtb4dgC5eK52Og_gk2_D0pa';
 
 class Movie {
   final String id, title;
-  final String? titleFr, overview, poster;
-  final int? year, runtime;
+  final String? titleFr, overview, poster, backdrop;
+  final int? year, runtime, tmdbId, votes;
   final double affinity, rating;
   final bool exploratory;
-  final List<String> genres, providers;
+  final List<String> genres, providers, directors, actors;
 
   Movie.fromJson(Map<String, dynamic> j)
       : id = j['id'] as String,
@@ -18,13 +18,18 @@ class Movie {
         titleFr = j['title_fr'] as String?,
         overview = j['overview'] as String?,
         poster = j['poster'] as String?,
+        backdrop = j['backdrop'] as String?,
         year = j['year'] as int?,
         runtime = j['runtime'] as int?,
+        tmdbId = (j['tmdb_id'] as num?)?.toInt(),
+        votes = (j['votes'] as num?)?.toInt(),
         rating = ((j['rating'] ?? 0) as num).toDouble(),
         affinity = ((j['affinity'] ?? 0) as num).toDouble(),
         exploratory = (j['exploratory'] ?? false) as bool,
         genres = ((j['genres'] ?? []) as List).map((e) => e.toString()).toList(),
-        providers = ((j['providers'] ?? []) as List).map((e) => e.toString()).toList();
+        providers = ((j['providers'] ?? []) as List).map((e) => e.toString()).toList(),
+        directors = ((j['directors'] ?? []) as List).map((e) => e.toString()).toList(),
+        actors = ((j['actors'] ?? []) as List).map((e) => e.toString()).toList();
 
   String get display => (titleFr != null && titleFr!.isNotEmpty) ? titleFr! : title;
 }
@@ -103,5 +108,33 @@ class Api {
         .select('watched, movie_id, df_movies(*)')
         .eq('group_id', group);
     return (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// Infos riches via l'Edge Function 'tmdb-detail' (trailer, tagline, casting).
+  /// Renvoie null si la fonction est absente / échoue — l'écran reste fonctionnel.
+  static Future<Map<String, dynamic>?> detail(int tmdbId) async {
+    try {
+      final r = await _c.functions.invoke('tmdb-detail', body: {'tmdb_id': tmdbId});
+      final data = r.data;
+      if (data is Map) return Map<String, dynamic>.from(data);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Tous les films aimés (like / super) de l'utilisateur, plus récents d'abord.
+  static Future<List<Movie>> likedMovies() async {
+    final r = await _c
+        .from('df_swipes')
+        .select('created_at, action, df_movies(*)')
+        .eq('user_id', user!.id)
+        .inFilter('action', ['like', 'super'])
+        .order('created_at', ascending: false);
+    return (r as List)
+        .map((e) => e['df_movies'])
+        .where((e) => e != null)
+        .map((e) => Movie.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
   }
 }

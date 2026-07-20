@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'api.dart';
 import 'theme.dart';
 
@@ -342,7 +343,11 @@ class _MainShellState extends State<MainShell> {
   int _tab = 0;
   @override
   Widget build(BuildContext context) {
-    final pages = [DeckScreen(group: widget.group), ForYouScreen(group: widget.group)];
+    final pages = [
+      DeckScreen(group: widget.group),
+      ForYouScreen(group: widget.group),
+      const LikedScreen(),
+    ];
     return Scaffold(
       body: SafeArea(bottom: false, child: pages[_tab]),
       bottomNavigationBar: NavigationBar(
@@ -352,6 +357,7 @@ class _MainShellState extends State<MainShell> {
         destinations: const [
           NavigationDestination(icon: Text('🎬', style: TextStyle(fontSize: 20)), label: 'Découvrir'),
           NavigationDestination(icon: Text('⭐', style: TextStyle(fontSize: 20)), label: 'Pour vous'),
+          NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'Ma liste'),
         ],
       ),
     );
@@ -435,7 +441,7 @@ class _DeckScreenState extends State<DeckScreen> {
                   ),
       ),
       Padding(
-        padding: const EdgeInsets.symmetric(vertical: 18),
+        padding: const EdgeInsets.only(top: 18, bottom: 6),
         child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           RoundBtn(icon: '✕', bg: DF.surface, onTap: () => _swipe('nope')),
           const SizedBox(width: 20),
@@ -443,6 +449,11 @@ class _DeckScreenState extends State<DeckScreen> {
           const SizedBox(width: 20),
           RoundBtn(icon: '♥', bg: DF.accent, onTap: () => _swipe('like')),
         ]),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Text('✕ Passer      ★ Ma liste      ♥ J\'aime',
+            textAlign: TextAlign.center, style: DF.sans(11.5, c: DF.inkSoft, w: FontWeight.w600)),
       ),
     ]);
   }
@@ -483,6 +494,20 @@ class MovieCard extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
             decoration: BoxDecoration(color: DF.surface.withValues(alpha: .82), borderRadius: BorderRadius.circular(99)),
             child: Text(btxt, style: DF.sans(12, c: bcol, w: FontWeight.w800)),
+          ),
+        ),
+        Positioned(
+          top: 12, right: 12,
+          child: GestureDetector(
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+            child: Container(
+              width: 40, height: 40,
+              decoration: BoxDecoration(
+                  color: DF.surface.withValues(alpha: .82), shape: BoxShape.circle),
+              alignment: Alignment.center,
+              child: Text('ⓘ', style: DF.sans(20, c: DF.ink, w: FontWeight.w700)),
+            ),
           ),
         ),
         Positioned(
@@ -597,7 +622,10 @@ class PosterTile extends StatelessWidget {
   final int rank;
   const PosterTile({super.key, required this.m, required this.rank});
   @override
-  Widget build(BuildContext context) => ClipRRect(
+  Widget build(BuildContext context) => GestureDetector(
+      onTap: () => Navigator.push(
+          context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+      child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: Stack(fit: StackFit.expand, children: [
           if (m.poster != null)
@@ -625,7 +653,362 @@ class PosterTile extends StatelessWidget {
             ),
           ),
         ]),
+      ));
+}
+
+// ---------------------------------------------------------------------------
+// Fiche film détaillée + bande-annonce
+// ---------------------------------------------------------------------------
+class DetailScreen extends StatefulWidget {
+  final Movie m;
+  const DetailScreen({super.key, required this.m});
+  @override
+  State<DetailScreen> createState() => _DetailScreenState();
+}
+
+class _DetailScreenState extends State<DetailScreen> {
+  Map<String, dynamic>? _detail;
+
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.m.tmdbId;
+    if (id != null) _fetch(id);
+  }
+
+  Future<void> _fetch(int id) async {
+    final d = await Api.detail(id);
+    if (d != null && mounted) setState(() => _detail = d);
+  }
+
+  Movie get m => widget.m;
+
+  String? get _tagline {
+    final t = _detail?['tagline'];
+    return (t is String && t.trim().isNotEmpty) ? t.trim() : null;
+  }
+
+  int? get _runtime => (_detail?['runtime'] as num?)?.toInt() ?? m.runtime;
+
+  String? get _overview {
+    final o = _detail?['overview'];
+    if (o is String && o.trim().isNotEmpty) return o.trim();
+    return (m.overview != null && m.overview!.isNotEmpty) ? m.overview : null;
+  }
+
+  String? get _backdrop {
+    final b = _detail?['backdrop'];
+    if (b is String && b.isNotEmpty) return b;
+    return (m.backdrop != null && m.backdrop!.isNotEmpty) ? m.backdrop : m.poster;
+  }
+
+  List<String> get _genres {
+    final g = _detail?['genres'];
+    if (g is List && g.isNotEmpty) return g.map((e) => e.toString()).toList();
+    return m.genres;
+  }
+
+  List<String> get _directors {
+    final d = _detail?['directors'];
+    if (d is List && d.isNotEmpty) return d.map((e) => e.toString()).toList();
+    return m.directors;
+  }
+
+  List<(String, String?)> get _cast {
+    final c = _detail?['cast'];
+    if (c is List && c.isNotEmpty) {
+      return c
+          .map<(String, String?)>((e) {
+            final map = Map<String, dynamic>.from(e as Map);
+            final name = (map['name'] ?? '').toString();
+            final ch = map['character']?.toString();
+            return (name, (ch != null && ch.isNotEmpty) ? ch : null);
+          })
+          .where((e) => e.$1.isNotEmpty)
+          .toList();
+    }
+    return m.actors.map<(String, String?)>((a) => (a, null)).toList();
+  }
+
+  String? get _trailerKey {
+    final k = _detail?['trailer_youtube_key'];
+    return (k is String && k.isNotEmpty) ? k : null;
+  }
+
+  Future<void> _openTrailer() async {
+    final key = _trailerKey;
+    if (key == null) return;
+    final url = Uri.parse('https://www.youtube.com/watch?v=$key');
+    await launchUrl(url, mode: LaunchMode.externalApplication);
+  }
+
+  String _votesFmt(int v) => v >= 1000 ? '${(v / 1000).toStringAsFixed(v >= 10000 ? 0 : 1)}k' : '$v';
+
+  String _providerLabel(String code) {
+    for (final p in kProviders) {
+      if (p.$1 == code) return p.$2;
+    }
+    return code;
+  }
+
+  Widget _section(String title, Widget child) => Padding(
+        padding: const EdgeInsets.only(top: 24),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title.toUpperCase(), style: DF.sans(12, c: DF.secondary, w: FontWeight.w800)),
+          const SizedBox(height: 10),
+          child,
+        ]),
       );
+
+  Widget _chip(String label) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(color: DF.surface, borderRadius: BorderRadius.circular(99)),
+        child: Text(label, style: DF.sans(12.5, c: DF.inkBody, w: FontWeight.w600)),
+      );
+
+  Widget _castChip((String, String?) c) => Container(
+        constraints: const BoxConstraints(maxWidth: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(color: DF.surface, borderRadius: BorderRadius.circular(14)),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(c.$1, style: DF.sans(12.5, w: FontWeight.w700)),
+          if (c.$2 != null)
+            Text(c.$2!, maxLines: 1, overflow: TextOverflow.ellipsis, style: DF.sans(11, c: DF.inkSoft)),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final meta = <String>[
+      if (m.year != null) '${m.year}',
+      if (_runtime != null) '$_runtime min',
+      if (m.rating > 0) '★ ${m.rating}${m.votes != null && m.votes! > 0 ? ' (${_votesFmt(m.votes!)})' : ''}',
+    ];
+    final cast = _cast;
+    final directors = _directors;
+    return Scaffold(
+      body: CustomScrollView(slivers: [
+        SliverToBoxAdapter(
+          child: Stack(children: [
+            SizedBox(
+              height: 300,
+              width: double.infinity,
+              child: _backdrop != null
+                  ? Image.network(_backdrop!, fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                  : Container(color: DF.muted, child: const Center(child: Text('🎬', style: TextStyle(fontSize: 72)))),
+            ),
+            const Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                      begin: Alignment.bottomCenter, end: Alignment.topCenter,
+                      colors: [DF.bg, Colors.transparent], stops: [0.0, 0.72]),
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: GestureDetector(
+                  onTap: () => Navigator.pop(context),
+                  child: Container(
+                    width: 40, height: 40,
+                    decoration: BoxDecoration(color: DF.surface.withValues(alpha: .82), shape: BoxShape.circle),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.arrow_back, color: DF.ink, size: 22),
+                  ),
+                ),
+              ),
+            ),
+          ]),
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 40),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(m.display, style: DF.serif(30)),
+              if (_tagline != null) ...[
+                const SizedBox(height: 8),
+                Text(_tagline!,
+                    style: DF.sans(14, c: DF.secondary, w: FontWeight.w500).copyWith(fontStyle: FontStyle.italic)),
+              ],
+              if (meta.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(meta.join('   ·   '), style: DF.sans(14, c: DF.inkBody, w: FontWeight.w600)),
+              ],
+              if (_genres.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Wrap(spacing: 8, runSpacing: 8, children: _genres.map(_chip).toList()),
+              ],
+              if (_trailerKey != null) ...[
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: DF.accent,
+                        foregroundColor: DF.accentInk,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18))),
+                    onPressed: _openTrailer,
+                    child: Text('▶   Bande-annonce', style: DF.sans(15, w: FontWeight.w700, c: DF.accentInk)),
+                  ),
+                ),
+              ],
+              if (directors.isNotEmpty)
+                _section(directors.length > 1 ? 'Réalisateurs' : 'Réalisation',
+                    Text(directors.join(', '), style: DF.sans(14.5, c: DF.ink, w: FontWeight.w600))),
+              if (cast.isNotEmpty)
+                _section('Casting',
+                    Wrap(spacing: 8, runSpacing: 8, children: cast.map(_castChip).toList())),
+              if (_overview != null)
+                _section('Synopsis',
+                    Text(_overview!, style: DF.sans(14.5, c: DF.inkBody).copyWith(height: 1.5))),
+              if (m.providers.isNotEmpty)
+                _section('Disponible sur',
+                    Wrap(spacing: 8, runSpacing: 8, children: m.providers.map((p) => _chip(_providerLabel(p))).toList())),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ma liste : films aimés + recherche
+// ---------------------------------------------------------------------------
+class LikedScreen extends StatefulWidget {
+  const LikedScreen({super.key});
+  @override
+  State<LikedScreen> createState() => _LikedScreenState();
+}
+
+class _LikedScreenState extends State<LikedScreen> {
+  Future<List<Movie>>? _future;
+  final _search = TextEditingController();
+  String _q = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _future = Api.likedMovies();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Ma liste', style: DF.serif(28)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _search,
+            onChanged: (v) => setState(() => _q = v.trim().toLowerCase()),
+            style: DF.sans(15),
+            decoration: InputDecoration(
+              hintText: 'Rechercher un film…',
+              hintStyle: DF.sans(14, c: DF.inkSoft),
+              prefixIcon: const Icon(Icons.search, color: DF.inkSoft, size: 20),
+              filled: true,
+              fillColor: DF.surface,
+              contentPadding: const EdgeInsets.symmetric(vertical: 0),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.muted)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.accent, width: 2)),
+            ),
+          ),
+        ]),
+      ),
+      Expanded(
+        child: FutureBuilder<List<Movie>>(
+          future: _future,
+          builder: (_, snap) {
+            if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: DF.accent));
+            final all = snap.data!;
+            if (all.isEmpty) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(40),
+                  child: Text('Aucun film dans votre liste. Swipez pour en ajouter !',
+                      textAlign: TextAlign.center, style: DF.sans(15, c: DF.inkSoft)),
+                ),
+              );
+            }
+            final films = _q.isEmpty
+                ? all
+                : all.where((m) => m.display.toLowerCase().contains(_q)).toList();
+            if (films.isEmpty) {
+              return Center(
+                child: Text('Aucun résultat pour « $_q ».', style: DF.sans(14, c: DF.inkSoft)),
+              );
+            }
+            return ListView.separated(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 20),
+              itemCount: films.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (_, i) => _LikedRow(m: films[i]),
+            );
+          },
+        ),
+      ),
+    ]);
+  }
+}
+
+class _LikedRow extends StatelessWidget {
+  final Movie m;
+  const _LikedRow({required this.m});
+  @override
+  Widget build(BuildContext context) {
+    final sub = [
+      if (m.year != null) '${m.year}',
+      ...m.genres.take(2),
+    ].join(' · ');
+    return Material(
+      color: DF.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 54, height: 80,
+                child: m.poster != null
+                    ? Image.network(m.poster!, fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                    : Container(color: DF.muted, child: const Center(child: Text('🎬', style: TextStyle(fontSize: 24)))),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(m.display, maxLines: 2, overflow: TextOverflow.ellipsis, style: DF.sans(15.5, w: FontWeight.w700)),
+                if (sub.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: DF.sans(13, c: DF.inkSoft)),
+                ],
+              ]),
+            ),
+            const Icon(Icons.chevron_right, color: DF.inkSoft),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
