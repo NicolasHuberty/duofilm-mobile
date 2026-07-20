@@ -1,0 +1,75 @@
+# Codemagic — build iOS Duofilm dans le cloud (sans Xcode local) + TestFlight.
+# Pré-requis (une fois, côté Codemagic) :
+#   1. Connecter le repo GitHub qui contient ce dossier mobile/.
+#   2. Intégration "App Store Connect API key" (celle de Duonom, "Duoname", suffit :
+#      la clé donne accès à tout le compte Apple Developer JH65483579).
+#   3. Créer l'app dans App Store Connect avec le bundle id com.duofilm.duofilm
+#      + un groupe TestFlight (ex. "Amis").
+workflows:
+  ios-testflight:
+    name: Duofilm iOS → TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    working_directory: .
+    integrations:
+      app_store_connect: "Duoname"   # nom exact de la clé API dans Codemagic
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "com.duofilm.duofilm"
+    scripts:
+      - name: Init keychain
+        script: keychain initialize
+      - name: Enregistre l'App ID si besoin
+        script: |
+          set -eo pipefail
+          rid=$(app-store-connect bundle-ids list \
+            --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier \
+            --platform IOS --json | jq -r '.[0].id // empty')
+          if [ -z "$rid" ]; then
+            app-store-connect bundle-ids register "$BUNDLE_ID" --name "Duofilm" --platform IOS
+          fi
+      - name: Certificat + profil de signature
+        script: |
+          set -e
+          openssl genrsa -out /tmp/cert_key.pem 2048
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key=@file:/tmp/cert_key.pem \
+            --strict-match-identifier \
+            --create
+      - name: Ajoute le certificat au keychain
+        script: keychain add-certificates
+      - name: Applique les profils au projet Xcode
+        script: xcode-project use-profiles
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Build IPA
+        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - "Amis"
+
+  android-apk:
+    name: Duofilm Android → APK
+    max_build_duration: 45
+    instance_type: mac_mini_m2
+    working_directory: .
+    environment:
+      flutter: stable
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Build APK
+        script: flutter build apk --release
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk

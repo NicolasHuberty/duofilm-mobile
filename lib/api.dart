@@ -1,0 +1,107 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Projet Supabase PARTAGÉ avec Duonom (clé publiable, protégée par la RLS).
+const supabaseUrl = 'https://arxaouwzmqfvfmftlbio.supabase.co';
+const supabaseAnonKey = 'sb_publishable_VwgG_Pvvhtb4dgC5eK52Og_gk2_D0pa';
+
+class Movie {
+  final String id, title;
+  final String? titleFr, overview, poster;
+  final int? year, runtime;
+  final double affinity, rating;
+  final bool exploratory;
+  final List<String> genres, providers;
+
+  Movie.fromJson(Map<String, dynamic> j)
+      : id = j['id'] as String,
+        title = (j['title'] ?? '') as String,
+        titleFr = j['title_fr'] as String?,
+        overview = j['overview'] as String?,
+        poster = j['poster'] as String?,
+        year = j['year'] as int?,
+        runtime = j['runtime'] as int?,
+        rating = ((j['rating'] ?? 0) as num).toDouble(),
+        affinity = ((j['affinity'] ?? 0) as num).toDouble(),
+        exploratory = (j['exploratory'] ?? false) as bool,
+        genres = ((j['genres'] ?? []) as List).map((e) => e.toString()).toList(),
+        providers = ((j['providers'] ?? []) as List).map((e) => e.toString()).toList();
+
+  String get display => (titleFr != null && titleFr!.isNotEmpty) ? titleFr! : title;
+}
+
+class Api {
+  static SupabaseClient get _c => Supabase.instance.client;
+  static User? get user => _c.auth.currentUser;
+
+  static Future<void> init() => Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+
+  static Future<AuthResponse> signIn(String email, String pwd) =>
+      _c.auth.signInWithPassword(email: email, password: pwd);
+  static Future<AuthResponse> signUp(String email, String pwd) =>
+      _c.auth.signUp(email: email, password: pwd);
+  static Future<void> signOut() => _c.auth.signOut();
+
+  static Future<List<String>> providers() async {
+    final r = await _c.from('df_prefs').select('providers').eq('user_id', user!.id).maybeSingle();
+    if (r == null || r['providers'] == null) return [];
+    return (r['providers'] as List).map((e) => e.toString()).toList();
+  }
+
+  static Future<void> setProviders(List<String> p) =>
+      _c.from('df_prefs').upsert({'user_id': user!.id, 'providers': p}, onConflict: 'user_id');
+
+  static Future<int> swipeCount() async {
+    final r = await _c.from('df_swipes').count(CountOption.exact).eq('user_id', user!.id);
+    return r;
+  }
+
+  static List<Movie> _movies(dynamic data) =>
+      (data as List).map((e) => Movie.fromJson(Map<String, dynamic>.from(e))).toList();
+
+  static Future<List<Movie>> deck({String? group, double explore = 0.3}) async {
+    final r = await _c.rpc('df_deck', params: {'p_group': group, 'p_limit': 12, 'p_explore': explore});
+    return _movies(r);
+  }
+
+  static Future<List<Movie>> forYou({double discovery = 0.0}) async {
+    final r = await _c.rpc('df_for_you', params: {'p_limit': 20, 'p_discovery': discovery});
+    return _movies(r);
+  }
+
+  static Future<bool> swipe(String movieId, String action, {String? group}) async {
+    final r = await _c.rpc('df_swipe', params: {'p_movie': movieId, 'p_action': action, 'p_group': group});
+    return r == true;
+  }
+
+  static Future<Map<String, dynamic>> createGroup() async =>
+      Map<String, dynamic>.from(await _c.rpc('df_create_group', params: {'p_name': null}));
+  static Future<Map<String, dynamic>> joinGroup(String code) async =>
+      Map<String, dynamic>.from(await _c.rpc('df_join_group', params: {'p_code': code}));
+
+  static Future<int> importWatched(List<String> titles) async {
+    int total = 0;
+    for (var i = 0; i < titles.length; i += 300) {
+      final batch = titles.sublist(i, i + 300 > titles.length ? titles.length : i + 300);
+      final r = await _c.rpc('df_import_watched', params: {'p_titles': batch});
+      if (r is int) total += r;
+    }
+    return total;
+  }
+
+  static Future<List<Map<String, dynamic>>> myGroups() async {
+    final r = await _c.from('df_group_members').select('df_groups(*)');
+    return (r as List)
+        .map((e) => e['df_groups'])
+        .where((e) => e != null)
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  static Future<List<Map<String, dynamic>>> watchlist(String group) async {
+    final r = await _c
+        .from('df_watchlist')
+        .select('watched, movie_id, df_movies(*)')
+        .eq('group_id', group);
+    return (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+}
