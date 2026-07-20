@@ -15,7 +15,7 @@ class DuofilmApp extends StatelessWidget {
   const DuofilmApp({super.key, required this.seenOnboarding});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Duofilm',
+        title: 'Duomovie',
         debugShowCheckedModeBanner: false,
         theme: DF.theme(),
         home: seenOnboarding ? const Gate() : const Onboarding(),
@@ -644,7 +644,7 @@ class BrandRow extends StatelessWidget {
           ]),
         ),
         const SizedBox(width: 9),
-        Text('Duofilm', style: DF.serif(small ? 18 : 20)),
+        Text('Duomovie', style: DF.serif(small ? 18 : 20)),
       ]);
 }
 
