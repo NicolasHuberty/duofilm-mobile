@@ -46,6 +46,16 @@ class Api {
       _c.auth.signUp(email: email, password: pwd);
   static Future<void> signOut() => _c.auth.signOut();
 
+  /// Mode invité : connexion anonyme (aucun email requis).
+  static Future<AuthResponse> signInAnonymously() => _c.auth.signInAnonymously();
+
+  /// L'utilisateur courant est-il un compte invité (anonyme) ?
+  static bool get isGuest => _c.auth.currentUser?.isAnonymous ?? false;
+
+  /// Transforme un compte invité en compte permanent (garde les mêmes données).
+  static Future<UserResponse> upgradeAccount(String email, String pwd) =>
+      _c.auth.updateUser(UserAttributes(email: email, password: pwd));
+
   static Future<List<String>> providers() async {
     final r = await _c.from('df_prefs').select('providers').eq('user_id', user!.id).maybeSingle();
     if (r == null || r['providers'] == null) return [];

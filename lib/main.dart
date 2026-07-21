@@ -144,7 +144,7 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   final _email = TextEditingController(), _pwd = TextEditingController();
-  bool _signup = false, _busy = false;
+  bool _signup = false, _busy = false, _busyGuest = false;
   String? _err;
 
   Future<void> _go() async {
@@ -164,6 +164,29 @@ class _AuthScreenState extends State<AuthScreen> {
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  Future<void> _guest() async {
+    setState(() { _busyGuest = true; _err = null; });
+    try {
+      await Api.signInAnonymously();
+      if (mounted) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const Gate()));
+      }
+    } catch (e) {
+      setState(() => _err = e.toString());
+    } finally {
+      if (mounted) setState(() => _busyGuest = false);
+    }
+  }
+
+  Widget _bullet(String emoji, String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(emoji, style: const TextStyle(fontSize: 15)),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: DF.sans(13.5, c: DF.inkBody))),
+        ]),
+      );
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -190,6 +213,44 @@ class _AuthScreenState extends State<AuthScreen> {
                 onPressed: () => setState(() => _signup = !_signup),
                 child: Text(_signup ? 'J\'ai déjà un compte' : 'Créer un compte (ou compte Duonom)',
                     style: DF.sans(14, c: DF.secondary, w: FontWeight.w700)),
+              ),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Expanded(child: Divider(color: DF.muted, thickness: 1)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('ou', style: DF.sans(13, c: DF.inkSoft, w: FontWeight.w600)),
+                ),
+                const Expanded(child: Divider(color: DF.muted, thickness: 1)),
+              ]),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 54,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: DF.ink,
+                      side: const BorderSide(color: DF.muted),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
+                  onPressed: _busyGuest ? null : _guest,
+                  child: _busyGuest
+                      ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: DF.ink))
+                      : Text('Continuer sans compte', style: DF.sans(15, w: FontWeight.w700, c: DF.ink)),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: DF.surface, borderRadius: BorderRadius.circular(18)),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Pourquoi créer un compte ?', style: DF.sans(15, w: FontWeight.w800, c: DF.secondary)),
+                  const SizedBox(height: 12),
+                  _bullet('📌', 'Votre liste et vos goûts sauvegardés à vie'),
+                  _bullet('📱', 'Synchronisés entre votre téléphone et le web'),
+                  _bullet('❤️', 'Le mode couple / groupe pour matcher à deux'),
+                  const SizedBox(height: 4),
+                  Text('Sans compte, vos données restent sur cet appareil et peuvent être perdues.',
+                      style: DF.sans(12.5, c: DF.inkSoft)),
+                ]),
               ),
             ]),
           ),
@@ -304,6 +365,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _openUpgrade() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const UpgradeScreen()));
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         body: SafeArea(
@@ -311,6 +377,31 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.all(24),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               const BrandRow(),
+              if (Api.isGuest) ...[
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: _openUpgrade,
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: DF.secondary.withValues(alpha: .16),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: DF.secondary.withValues(alpha: .55), width: 1.5),
+                    ),
+                    child: Row(children: [
+                      const Text('✨', style: TextStyle(fontSize: 20)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                            'Mode invité — créez un compte pour garder votre liste à vie et l\'utiliser à deux',
+                            style: DF.sans(13, c: DF.ink, w: FontWeight.w600)),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('→', style: DF.sans(18, c: DF.secondary, w: FontWeight.w800)),
+                    ]),
+                  ),
+                ),
+              ],
               const SizedBox(height: 20),
               Text('Ce soir, on regarde…', style: DF.serif(28)),
               const SizedBox(height: 20),
@@ -323,6 +414,69 @@ class _HomeScreenState extends State<HomeScreen> {
                   Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const Gate()), (_) => false);
                 }},
                 child: Text('Se déconnecter', style: DF.sans(14, c: DF.inkSoft)),
+              ),
+            ]),
+          ),
+        ),
+      );
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade : transformer un compte invité en compte permanent
+// ---------------------------------------------------------------------------
+class UpgradeScreen extends StatefulWidget {
+  const UpgradeScreen({super.key});
+  @override
+  State<UpgradeScreen> createState() => _UpgradeScreenState();
+}
+
+class _UpgradeScreenState extends State<UpgradeScreen> {
+  final _email = TextEditingController(), _pwd = TextEditingController();
+  bool _busy = false;
+  String? _err;
+
+  Future<void> _save() async {
+    setState(() { _busy = true; _err = null; });
+    try {
+      await Api.upgradeAccount(_email.text.trim(), _pwd.text);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Compte créé — vos données sont conservées ✨')));
+      Navigator.pop(context);
+    } catch (e) {
+      setState(() => _err = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: DF.bg,
+          elevation: 0,
+          iconTheme: const IconThemeData(color: DF.ink),
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text('Sauvegarder mon compte', style: DF.serif(30)),
+              const SizedBox(height: 12),
+              Text(
+                  'Votre liste et vos goûts actuels sont conservés — on ajoute juste un email et un mot de passe.',
+                  style: DF.sans(15, c: DF.inkBody)),
+              const SizedBox(height: 24),
+              Field(controller: _email, label: 'Email', keyboard: TextInputType.emailAddress),
+              const SizedBox(height: 14),
+              Field(controller: _pwd, label: 'Mot de passe', obscure: true),
+              const SizedBox(height: 8),
+              if (_err != null) Text(_err!, style: DF.sans(13, c: DF.accent)),
+              const SizedBox(height: 16),
+              PrimaryButton(label: 'Créer mon compte', busy: _busy, onTap: _save),
+              TextButton(
+                onPressed: _busy ? null : () => Navigator.pop(context),
+                child: Text('Plus tard', style: DF.sans(14, c: DF.inkSoft, w: FontWeight.w600)),
               ),
             ]),
           ),
@@ -1090,6 +1244,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _openUpgrade() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => const UpgradeScreen()));
+    if (mounted) setState(() {});
+  }
+
   Future<void> _createGroup() async {
     final g = await Api.createGroup();
     if (!mounted) return;
@@ -1168,23 +1327,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Connecté en tant que', style: DF.sans(12, c: DF.inkSoft, w: FontWeight.w600)),
             const SizedBox(height: 4),
-            Text(Api.user?.email ?? '—', style: DF.sans(15.5, w: FontWeight.w700)),
+            Text(Api.isGuest ? 'Invité' : (Api.user?.email ?? '—'), style: DF.sans(15.5, w: FontWeight.w700)),
             const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              height: 46,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                    backgroundColor: DF.accent,
-                    foregroundColor: DF.accentInk,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
-                onPressed: _signOut,
-                child: Text('Se déconnecter', style: DF.sans(14.5, w: FontWeight.w700, c: DF.accentInk)),
+            if (Api.isGuest) ...[
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: DF.accent,
+                      foregroundColor: DF.accentInk,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                  onPressed: _openUpgrade,
+                  child: Text('Créer un compte', style: DF.sans(14.5, w: FontWeight.w700, c: DF.accentInk)),
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Text('Vos films et votre liste sont sauvegardés sur votre compte.',
-                style: DF.sans(12.5, c: DF.inkSoft)),
+              const SizedBox(height: 10),
+              Text('Sans compte, vos données restent sur cet appareil et peuvent être perdues.',
+                  style: DF.sans(12.5, c: DF.inkSoft)),
+            ] else ...[
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: DF.accent,
+                      foregroundColor: DF.accentInk,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                  onPressed: _signOut,
+                  child: Text('Se déconnecter', style: DF.sans(14.5, w: FontWeight.w700, c: DF.accentInk)),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text('Vos films et votre liste sont sauvegardés sur votre compte.',
+                  style: DF.sans(12.5, c: DF.inkSoft)),
+            ],
           ])),
         ]),
 
