@@ -51,7 +51,14 @@ workflows:
       - name: Flutter pub get
         script: flutter pub get
       - name: Build IPA
-        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+        script: |
+          set -e
+          # Numéro de build unique et croissant (App Store Connect refuse un doublon).
+          LATEST=$(app-store-connect get-latest-testflight-build-number "6792902132" 2>/dev/null || echo "")
+          if [ -z "$LATEST" ]; then NEXT="$BUILD_NUMBER"; else NEXT=$((LATEST + 1)); fi
+          echo "Build number: $NEXT"
+          flutter build ipa --release --build-number="$NEXT" \
+            --export-options-plist=/Users/builder/export_options.plist
     artifacts:
       - build/ios/ipa/*.ipa
       - build/ios/ipa/*.ipa
