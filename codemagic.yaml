@@ -34,13 +34,10 @@ workflows:
       - name: Certificat + profil de signature
         script: |
           set -e
-          # Le workflow crée un certificat frais à chaque build (clé éphémère) ;
-          # Apple limite les certificats de distribution → on révoque d'abord les
-          # anciens (inutilisables, clé perdue ; les builds déjà publiés restent valides).
-          app-store-connect certificates list --type IOS_DISTRIBUTION --json \
-            | jq -r '.[].id' | while read cid; do
-              [ -n "$cid" ] && app-store-connect certificates delete "$cid" --yes || true
-            done
+          # NB : chaque build crée un certificat de distribution (clé éphémère).
+          # Apple en limite le nombre (~3) → si un build échoue ici avec un code 1,
+          # supprimer les anciens certificats dans App Store Connect (Users & Access
+          # → Integrations → Certificates) puis relancer.
           openssl genrsa -out /tmp/cert_key.pem 2048
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
