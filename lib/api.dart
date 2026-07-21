@@ -55,6 +55,16 @@ class Api {
   static Future<void> setProviders(List<String> p) =>
       _c.from('df_prefs').upsert({'user_id': user!.id, 'providers': p}, onConflict: 'user_id');
 
+  /// Réglage « uniquement mes plateformes » (défaut false = montrer tous les films).
+  static Future<bool> onlyProviders() async {
+    final r = await _c.from('df_prefs').select('only_providers').eq('user_id', user!.id).maybeSingle();
+    if (r == null || r['only_providers'] == null) return false;
+    return r['only_providers'] == true;
+  }
+
+  static Future<void> setOnlyProviders(bool value) =>
+      _c.from('df_prefs').upsert({'user_id': user!.id, 'only_providers': value}, onConflict: 'user_id');
+
   static Future<int> swipeCount() async {
     final r = await _c.from('df_swipes').count(CountOption.exact).eq('user_id', user!.id);
     return r;
@@ -63,13 +73,22 @@ class Api {
   static List<Movie> _movies(dynamic data) =>
       (data as List).map((e) => Movie.fromJson(Map<String, dynamic>.from(e))).toList();
 
-  static Future<List<Movie>> deck({String? group, double explore = 0.3}) async {
-    final r = await _c.rpc('df_deck', params: {'p_group': group, 'p_limit': 12, 'p_explore': explore});
+  static Future<List<Movie>> deck({String? group, double explore = 0.3, bool onlyProviders = false}) async {
+    final r = await _c.rpc('df_deck', params: {
+      'p_group': group,
+      'p_limit': 12,
+      'p_explore': explore,
+      'p_only_providers': onlyProviders,
+    });
     return _movies(r);
   }
 
-  static Future<List<Movie>> forYou({double discovery = 0.0}) async {
-    final r = await _c.rpc('df_for_you', params: {'p_limit': 20, 'p_discovery': discovery});
+  static Future<List<Movie>> forYou({double discovery = 0.0, bool onlyProviders = false}) async {
+    final r = await _c.rpc('df_for_you', params: {
+      'p_limit': 20,
+      'p_discovery': discovery,
+      'p_only_providers': onlyProviders,
+    });
     return _movies(r);
   }
 
@@ -82,6 +101,9 @@ class Api {
       Map<String, dynamic>.from(await _c.rpc('df_create_group', params: {'p_name': null}));
   static Future<Map<String, dynamic>> joinGroup(String code) async =>
       Map<String, dynamic>.from(await _c.rpc('df_join_group', params: {'p_code': code}));
+
+  static Future<void> leaveGroup(String groupId) =>
+      _c.from('df_group_members').delete().eq('group_id', groupId).eq('user_id', user!.id);
 
   static Future<int> importWatched(List<String> titles) async {
     int total = 0;

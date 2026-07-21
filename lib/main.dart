@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'api.dart';
 import 'theme.dart';
@@ -347,6 +348,7 @@ class _MainShellState extends State<MainShell> {
       DeckScreen(group: widget.group),
       ForYouScreen(group: widget.group),
       const LikedScreen(),
+      const SettingsScreen(),
     ];
     return Scaffold(
       body: SafeArea(bottom: false, child: pages[_tab]),
@@ -358,6 +360,7 @@ class _MainShellState extends State<MainShell> {
           NavigationDestination(icon: Text('🎬', style: TextStyle(fontSize: 20)), label: 'Découvrir'),
           NavigationDestination(icon: Text('⭐', style: TextStyle(fontSize: 20)), label: 'Pour vous'),
           NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'Ma liste'),
+          NavigationDestination(icon: Text('⚙️', style: TextStyle(fontSize: 20)), label: 'Réglages'),
         ],
       ),
     );
@@ -376,22 +379,39 @@ class DeckScreen extends StatefulWidget {
 
 class _DeckScreenState extends State<DeckScreen> {
   final List<Movie> _deck = [];
+  final Set<String> _seen = {}; // ids déjà en deck ou déjà swipés cette session
   bool _loading = true;
+  bool _fetching = false;
+  bool _onlyProviders = false;
   Offset _drag = Offset.zero;
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() { super.initState(); _init(); }
+
+  Future<void> _init() async {
+    _onlyProviders = await Api.onlyProviders();
+    await _load();
+  }
 
   Future<void> _load() async {
+    if (_fetching) return;
+    _fetching = true;
     try {
-      final m = await Api.deck(group: widget.group?['id'] as String?);
-      setState(() { _deck.addAll(m); _loading = false; });
-    } catch (_) { setState(() => _loading = false); }
+      final m = await Api.deck(group: widget.group?['id'] as String?, onlyProviders: _onlyProviders);
+      // Déduplication : n'ajouter que les films jamais vus/en deck cette session.
+      final fresh = m.where((f) => _seen.add(f.id)).toList();
+      if (mounted) setState(() { _deck.addAll(fresh); _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    } finally {
+      _fetching = false;
+    }
   }
 
   Future<void> _swipe(String action) async {
     if (_deck.isEmpty) return;
     final m = _deck.removeAt(0);
+    _seen.add(m.id);
     setState(() => _drag = Offset.zero);
     if (_deck.length < 4) _load();
     final matched = await Api.swipe(m.id, action, group: widget.group?['id'] as String?);
@@ -548,6 +568,7 @@ class _ForYouScreenState extends State<ForYouScreen> {
   Future<List<Movie>>? _future;
   int _swipes = 0;
   bool _ready = false;
+  bool _onlyProviders = false;
 
   static const _levels = [('Mes goûts', 0.0), ('Équilibré', 0.25), ('Découvrir +', 0.5)];
 
@@ -555,11 +576,18 @@ class _ForYouScreenState extends State<ForYouScreen> {
   void initState() { super.initState(); _check(); }
 
   Future<void> _check() async {
+    _onlyProviders = await Api.onlyProviders();
     final n = await Api.swipeCount();
-    setState(() { _swipes = n; _ready = n >= 15; if (_ready) _future = Api.forYou(discovery: _discovery); });
+    if (!mounted) return;
+    setState(() {
+      _swipes = n;
+      _ready = n >= 15;
+      if (_ready) _future = Api.forYou(discovery: _discovery, onlyProviders: _onlyProviders);
+    });
   }
 
-  void _reload() => setState(() => _future = Api.forYou(discovery: _discovery));
+  void _reload() =>
+      setState(() => _future = Api.forYou(discovery: _discovery, onlyProviders: _onlyProviders));
 
   @override
   Widget build(BuildContext context) {
@@ -1007,6 +1035,293 @@ class _LikedRow extends StatelessWidget {
           ]),
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Réglages : compte, plateformes, filtre, groupes
+// ---------------------------------------------------------------------------
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final Set<String> _sel = {};
+  bool _onlyProviders = false;
+  List<Map<String, dynamic>> _groups = [];
+  bool _loading = true;
+  bool _busyProviders = false;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    final providers = await Api.providers();
+    final only = await Api.onlyProviders();
+    final groups = await Api.myGroups();
+    if (!mounted) return;
+    setState(() {
+      _sel..clear()..addAll(providers);
+      _onlyProviders = only;
+      _groups = groups;
+      _loading = false;
+    });
+  }
+
+  Future<void> _saveProviders() async {
+    setState(() => _busyProviders = true);
+    await Api.setProviders(_sel.toList());
+    if (mounted) setState(() => _busyProviders = false);
+  }
+
+  Future<void> _setOnly(bool v) async {
+    setState(() => _onlyProviders = v);
+    await Api.setOnlyProviders(v);
+  }
+
+  Future<void> _signOut() async {
+    await Api.signOut();
+    if (mounted) {
+      Navigator.pushAndRemoveUntil(
+          context, MaterialPageRoute(builder: (_) => const Gate()), (_) => false);
+    }
+  }
+
+  Future<void> _createGroup() async {
+    final g = await Api.createGroup();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Groupe créé — code ${g['invite_code']}')));
+    await _load();
+  }
+
+  Future<void> _joinGroup() async {
+    final code = await _prompt('Code d\'invitation');
+    if (code == null || code.trim().isEmpty) return;
+    try {
+      await Api.joinGroup(code.trim());
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Groupe rejoint !')));
+      await _load();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Code invalide')));
+      }
+    }
+  }
+
+  Future<void> _leaveGroup(String id) async {
+    await Api.leaveGroup(id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Groupe quitté')));
+    await _load();
+  }
+
+  Future<String?> _prompt(String title) {
+    final c = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: DF.surface,
+        title: Text(title, style: DF.sans(16, w: FontWeight.w700)),
+        content: TextField(controller: c, autofocus: true, style: DF.sans(16)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler', style: DF.sans(14, c: DF.inkSoft))),
+          TextButton(onPressed: () => Navigator.pop(context, c.text), child: Text('OK', style: DF.sans(14, c: DF.secondary, w: FontWeight.w700))),
+        ],
+      ),
+    );
+  }
+
+  Widget _section(String title, List<Widget> children) => Padding(
+        padding: const EdgeInsets.only(top: 26),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title.toUpperCase(), style: DF.sans(12, c: DF.secondary, w: FontWeight.w800)),
+          const SizedBox(height: 12),
+          ...children,
+        ]),
+      );
+
+  Widget _card(Widget child) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: DF.surface, borderRadius: BorderRadius.circular(18)),
+        child: child,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(color: DF.accent));
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 30),
+      children: [
+        Text('Réglages', style: DF.serif(28)),
+
+        // --- COMPTE ---
+        _section('Compte', [
+          _card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Connecté en tant que', style: DF.sans(12, c: DF.inkSoft, w: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text(Api.user?.email ?? '—', style: DF.sans(15.5, w: FontWeight.w700)),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              height: 46,
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor: DF.accent,
+                    foregroundColor: DF.accentInk,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                onPressed: _signOut,
+                child: Text('Se déconnecter', style: DF.sans(14.5, w: FontWeight.w700, c: DF.accentInk)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text('Vos films et votre liste sont sauvegardés sur votre compte.',
+                style: DF.sans(12.5, c: DF.inkSoft)),
+          ])),
+        ]),
+
+        // --- PLATEFORMES ---
+        _section('Plateformes', [
+          GridView.count(
+            crossAxisCount: 2,
+            childAspectRatio: 3,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            children: kProviders.map((p) {
+              final on = _sel.contains(p.$1);
+              return GestureDetector(
+                onTap: () => setState(() => on ? _sel.remove(p.$1) : _sel.add(p.$1)),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: on ? const Color(0xFF39222E) : DF.surface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: on ? DF.accent : Colors.transparent, width: 2),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(p.$2, style: DF.sans(15, w: FontWeight.w700)),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: PrimaryButton(
+                label: 'Enregistrer mes plateformes', busy: _busyProviders, onTap: _saveProviders),
+          ),
+          const SizedBox(height: 16),
+          _card(Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Uniquement mes plateformes', style: DF.sans(15, w: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(
+                    _onlyProviders
+                        ? 'Activé : ne montrer que les films disponibles sur vos plateformes.'
+                        : 'Désactivé : tous les films.',
+                    style: DF.sans(12.5, c: DF.inkSoft)),
+              ]),
+            ),
+            const SizedBox(width: 10),
+            Switch(
+              value: _onlyProviders,
+              onChanged: _setOnly,
+              activeThumbColor: DF.accentInk,
+              activeTrackColor: DF.accent,
+              inactiveThumbColor: DF.inkSoft,
+              inactiveTrackColor: DF.muted,
+            ),
+          ])),
+        ]),
+
+        // --- GROUPE ---
+        _section('Groupe', [
+          if (_groups.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text('Vous ne faites partie d\'aucun groupe pour l\'instant.',
+                  style: DF.sans(13.5, c: DF.inkSoft)),
+            ),
+          ..._groups.map((g) {
+            final id = g['id']?.toString() ?? '';
+            final name = (g['name'] as String?)?.trim();
+            final code = g['invite_code']?.toString() ?? '';
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text((name != null && name.isNotEmpty) ? name : 'Mon groupe',
+                    style: DF.sans(15.5, w: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text('Code d\'invitation : $code', style: DF.sans(13, c: DF.inkBody, w: FontWeight.w600)),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: DF.secondary,
+                          side: const BorderSide(color: DF.secondary),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                      onPressed: () => SharePlus.instance.share(
+                          ShareParams(text: 'Rejoins mon groupe Duomovie avec le code : $code')),
+                      child: Text('Partager le code', style: DF.sans(13, w: FontWeight.w700, c: DF.secondary)),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: DF.inkSoft,
+                          side: const BorderSide(color: DF.muted),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                      onPressed: () => _leaveGroup(id),
+                      child: Text('Quitter', style: DF.sans(13, w: FontWeight.w700, c: DF.inkSoft)),
+                    ),
+                  ),
+                ]),
+              ])),
+            );
+          }),
+          Row(children: [
+            Expanded(
+              child: SizedBox(
+                height: 48,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: DF.accent,
+                      foregroundColor: DF.accentInk,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                  onPressed: _createGroup,
+                  child: Text('Créer un groupe', style: DF.sans(13.5, w: FontWeight.w700, c: DF.accentInk)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SizedBox(
+                height: 48,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: DF.ink,
+                      side: const BorderSide(color: DF.muted),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                  onPressed: _joinGroup,
+                  child: Text('Rejoindre un groupe', style: DF.sans(13.5, w: FontWeight.w700, c: DF.ink)),
+                ),
+              ),
+            ),
+          ]),
+        ]),
+      ],
     );
   }
 }
