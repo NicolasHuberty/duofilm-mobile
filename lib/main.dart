@@ -973,6 +973,17 @@ class _ForYouScreenState extends State<ForYouScreen> {
               borderRadius: BorderRadius.circular(6),
               child: LinearProgressIndicator(value: pct / 100, minHeight: 8, backgroundColor: DF.muted, color: DF.secondary),
             ),
+            const SizedBox(height: 20),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: DF.ink,
+                  side: const BorderSide(color: DF.muted),
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+              onPressed: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const LikedScreenPage())),
+              child: Text('❤ Mes coups de cœur', style: DF.sans(13, w: FontWeight.w700, c: DF.ink)),
+            ),
           ]),
         ),
       );
@@ -982,6 +993,21 @@ class _ForYouScreenState extends State<ForYouScreen> {
         padding: const EdgeInsets.fromLTRB(18, 12, 18, 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('RIEN QUE POUR VOUS', style: DF.sans(11, c: DF.secondary, w: FontWeight.w800)),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: DF.ink,
+                  side: const BorderSide(color: DF.muted),
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+              onPressed: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const LikedScreenPage())),
+              child: Text('❤ Mes coups de cœur — tous mes films likés',
+                  style: DF.sans(13, w: FontWeight.w700, c: DF.ink)),
+            ),
+          ),
           const SizedBox(height: 10),
           SegmentedControl(
             labels: _levels.map((e) => e.$1).toList(),
@@ -2090,9 +2116,14 @@ class WatchlistScreen extends StatefulWidget {
 class _WatchlistScreenState extends State<WatchlistScreen> {
   List<Map<String, dynamic>> _rows = [];
   bool _loading = true;
+  final _search = TextEditingController();
+  String _q = '';
 
   @override
   void initState() { super.initState(); _load(); }
+
+  @override
+  void dispose() { _search.dispose(); super.dispose(); }
 
   Future<void> _load() async {
     try {
@@ -2187,14 +2218,37 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator(color: DF.accent));
-    final unwatched = _rows.where((r) => r['watched'] != true).toList();
-    final watched = _rows.where((r) => r['watched'] == true).toList();
+    bool match(Map<String, dynamic> r) {
+      if (_q.isEmpty) return true;
+      final m = _movie(r);
+      return ('${m.titleFr ?? ''} ${m.title}').toLowerCase().contains(_q);
+    }
+    final unwatched = _rows.where((r) => r['watched'] != true && match(r)).toList();
+    final watched = _rows.where((r) => r['watched'] == true && match(r)).toList();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
         padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('À regarder ensemble', style: DF.serif(28)),
-          if (unwatched.length >= 2) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _search,
+            onChanged: (v) => setState(() => _q = v.trim().toLowerCase()),
+            style: DF.sans(15),
+            decoration: InputDecoration(
+              hintText: 'Chercher dans la liste…',
+              hintStyle: DF.sans(14, c: DF.inkSoft),
+              prefixIcon: const Icon(Icons.search, color: DF.inkSoft, size: 20),
+              filled: true,
+              fillColor: DF.surface,
+              contentPadding: const EdgeInsets.symmetric(vertical: 0),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.muted)),
+              focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.accent, width: 2)),
+            ),
+          ),
+          if (_q.isEmpty && unwatched.length >= 2) ...[
             const SizedBox(height: 12),
             PrimaryButton(
                 label: '🎲 On regarde quoi ce soir ?',
