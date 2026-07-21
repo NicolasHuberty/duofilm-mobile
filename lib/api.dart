@@ -83,15 +83,40 @@ class Api {
   static List<Movie> _movies(dynamic data) =>
       (data as List).map((e) => Movie.fromJson(Map<String, dynamic>.from(e))).toList();
 
-  static Future<List<Movie>> deck({String? group, double explore = 0.3, bool onlyProviders = false}) async {
+  static Future<List<Movie>> deck({
+    String? group,
+    double explore = 0.3,
+    bool onlyProviders = false,
+    int? maxRuntime,
+    List<String>? genres,
+  }) async {
     final r = await _c.rpc('df_deck', params: {
       'p_group': group,
       'p_limit': 12,
       'p_explore': explore,
       'p_only_providers': onlyProviders,
+      'p_max_runtime': maxRuntime,
+      'p_genres': (genres == null || genres.isEmpty) ? null : genres,
     });
     return _movies(r);
   }
+
+  /// Annule le dernier swipe (et le match/watchlist devenus invalides).
+  /// Renvoie le film pour remettre la carte en haut du deck.
+  static Future<Movie?> undoSwipe() async {
+    final r = await _c.rpc('df_undo_swipe');
+    if (r is Map) return Movie.fromJson(Map<String, dynamic>.from(r));
+    return null;
+  }
+
+  /// Marque un film de la watchlist comme vu ; le feedback (aimé ou non)
+  /// est réinjecté dans le goût (un vrai visionnage vaut plus qu'un swipe).
+  static Future<void> markWatched(String group, String movieId, {bool? liked}) =>
+      _c.rpc('df_mark_watched', params: {'p_group': group, 'p_movie': movieId, 'p_liked': liked});
+
+  /// Profil ciné : {likes, swipes, genres: [{genre, n}], compat: int?}.
+  static Future<Map<String, dynamic>> tasteStats({String? group}) async =>
+      Map<String, dynamic>.from(await _c.rpc('df_taste_stats', params: {'p_group': group}));
 
   static Future<List<Movie>> forYou({double discovery = 0.0, bool onlyProviders = false}) async {
     final r = await _c.rpc('df_for_you', params: {

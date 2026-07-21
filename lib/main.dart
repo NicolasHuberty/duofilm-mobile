@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
@@ -266,6 +269,30 @@ const kProviders = [
   ('canal', 'Canal+'), ('hbo', 'Max'), ('apple', 'Apple TV+'), ('arte', 'Arte'), ('orange', 'Orange'),
 ];
 
+/// Genres IMDb (anglais) → libellés français, pour tout l'affichage.
+const kGenresFr = {
+  'Comedy': 'Comédie', 'Drama': 'Drame', 'Action': 'Action', 'Thriller': 'Thriller',
+  'Romance': 'Romance', 'Sci-Fi': 'SF', 'Horror': 'Horreur', 'Animation': 'Animation',
+  'Adventure': 'Aventure', 'Crime': 'Polar', 'Fantasy': 'Fantasy', 'Documentary': 'Documentaire',
+  'Mystery': 'Mystère', 'Biography': 'Biographie', 'War': 'Guerre', 'History': 'Histoire',
+  'Family': 'Famille', 'Music': 'Musique', 'Musical': 'Comédie musicale', 'Western': 'Western',
+  'Sport': 'Sport', 'Film-Noir': 'Film noir',
+};
+String genreFr(String g) => kGenresFr[g] ?? g;
+
+/// Filtres de soirée proposés dans le deck.
+const kFilterGenres = [
+  ('Comedy', 'Comédie'), ('Drama', 'Drame'), ('Action', 'Action'), ('Thriller', 'Thriller'),
+  ('Romance', 'Romance'), ('Sci-Fi', 'SF'), ('Horror', 'Horreur'), ('Animation', 'Animation'),
+  ('Adventure', 'Aventure'), ('Crime', 'Polar'), ('Fantasy', 'Fantasy'), ('Documentary', 'Docu'),
+];
+const kDurations = [(null, 'Peu importe'), (95, '≤ 1h35'), (120, '≤ 2h'), (150, '≤ 2h30')];
+
+/// Lien d'invitation universel (ouvre le web, le code marche aussi dans l'app).
+String inviteMessage(String code) =>
+    'Rejoins-moi sur Duofilm pour choisir le film du soir 🍿\n'
+    'Code : $code\nhttps://duofilm.huberty.pro?join=$code';
+
 class ProvidersScreen extends StatefulWidget {
   const ProvidersScreen({super.key});
   @override
@@ -337,7 +364,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _createGroup() async {
     final g = await Api.createGroup();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Groupe créé — code ${g['invite_code']}')));
+    // Proposer tout de suite d'inviter : c'est le moment où l'intention est là.
+    SharePlus.instance.share(ShareParams(text: inviteMessage(g['invite_code'].toString())));
     _openDeck(group: g);
   }
 
@@ -498,11 +526,21 @@ class _MainShellState extends State<MainShell> {
   int _tab = 0;
   @override
   Widget build(BuildContext context) {
+    final isGroup = widget.group != null;
     final pages = [
       DeckScreen(group: widget.group),
       ForYouScreen(group: widget.group),
+      if (isGroup) WatchlistScreen(group: widget.group!),
       const LikedScreen(),
       const SettingsScreen(),
+    ];
+    final destinations = [
+      const NavigationDestination(icon: Text('🎬', style: TextStyle(fontSize: 20)), label: 'Découvrir'),
+      const NavigationDestination(icon: Text('⭐', style: TextStyle(fontSize: 20)), label: 'Pour vous'),
+      if (isGroup)
+        const NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'À voir'),
+      const NavigationDestination(icon: Text('❤️', style: TextStyle(fontSize: 20)), label: 'Ma liste'),
+      const NavigationDestination(icon: Text('⚙️', style: TextStyle(fontSize: 20)), label: 'Réglages'),
     ];
     return Scaffold(
       body: SafeArea(bottom: false, child: pages[_tab]),
@@ -510,12 +548,7 @@ class _MainShellState extends State<MainShell> {
         backgroundColor: DF.surface,
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(icon: Text('🎬', style: TextStyle(fontSize: 20)), label: 'Découvrir'),
-          NavigationDestination(icon: Text('⭐', style: TextStyle(fontSize: 20)), label: 'Pour vous'),
-          NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'Ma liste'),
-          NavigationDestination(icon: Text('⚙️', style: TextStyle(fontSize: 20)), label: 'Réglages'),
-        ],
+        destinations: destinations,
       ),
     );
   }
@@ -538,6 +571,10 @@ class _DeckScreenState extends State<DeckScreen> {
   bool _fetching = false;
   bool _onlyProviders = false;
   Offset _drag = Offset.zero;
+  Movie? _last;          // dernier film swipé (pour ↩ annuler)
+  int? _maxRuntime;      // filtres de soirée
+  final Set<String> _genres = {};
+  int? _compat;          // compatibilité de goûts du groupe (%)
 
   @override
   void initState() { super.initState(); _init(); }
@@ -545,13 +582,26 @@ class _DeckScreenState extends State<DeckScreen> {
   Future<void> _init() async {
     _onlyProviders = await Api.onlyProviders();
     await _load();
+    final gid = widget.group?['id'] as String?;
+    if (gid != null) {
+      try {
+        final s = await Api.tasteStats(group: gid);
+        final c = (s['compat'] as num?)?.toInt();
+        if (mounted && c != null) setState(() => _compat = c);
+      } catch (_) {}
+    }
   }
 
   Future<void> _load() async {
     if (_fetching) return;
     _fetching = true;
     try {
-      final m = await Api.deck(group: widget.group?['id'] as String?, onlyProviders: _onlyProviders);
+      final m = await Api.deck(
+        group: widget.group?['id'] as String?,
+        onlyProviders: _onlyProviders,
+        maxRuntime: _maxRuntime,
+        genres: _genres.toList(),
+      );
       // Déduplication : n'ajouter que les films jamais vus/en deck cette session.
       final fresh = m.where((f) => _seen.add(f.id)).toList();
       if (mounted) setState(() { _deck.addAll(fresh); _loading = false; });
@@ -566,10 +616,99 @@ class _DeckScreenState extends State<DeckScreen> {
     if (_deck.isEmpty) return;
     final m = _deck.removeAt(0);
     _seen.add(m.id);
+    _last = m;
     setState(() => _drag = Offset.zero);
     if (_deck.length < 4) _load();
     final matched = await Api.swipe(m.id, action, group: widget.group?['id'] as String?);
     if (matched && mounted) _showMatch(m);
+  }
+
+  Future<void> _undo() async {
+    final m = _last;
+    if (m == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Rien à annuler')));
+      return;
+    }
+    _last = null;
+    try {
+      await Api.undoSwipe();
+      if (mounted) {
+        setState(() => _deck.insert(0, m));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Swipe annulé ↩')));
+      }
+    } catch (_) {
+      _last = m; // l'annulation a échoué : on la garde disponible
+    }
+  }
+
+  int get _filterCount => (_maxRuntime != null ? 1 : 0) + _genres.length;
+
+  /// Sheet « Ce soir… » : durée max + genres. Recharge le deck à l'application.
+  Future<void> _openFilters() async {
+    int? tmpRuntime = _maxRuntime;
+    final tmpGenres = Set<String>.from(_genres);
+    Widget chip(String label, bool on, VoidCallback onTap, StateSetter refresh) => GestureDetector(
+          onTap: () { onTap(); refresh(() {}); },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: on ? DF.accent : DF.surface,
+              borderRadius: BorderRadius.circular(99),
+              border: Border.all(color: on ? DF.accent : DF.muted, width: 1.5),
+            ),
+            child: Text(label, style: DF.sans(13, w: FontWeight.w700, c: on ? DF.accentInk : DF.inkBody)),
+          ),
+        );
+    final apply = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: DF.bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, refresh) => Padding(
+          padding: const EdgeInsets.fromLTRB(22, 22, 22, 34),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Ce soir…', style: DF.serif(24)),
+            const SizedBox(height: 14),
+            Text('DURÉE', style: DF.sans(11, c: DF.inkSoft, w: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final d in kDurations)
+                chip(d.$2, tmpRuntime == d.$1, () => tmpRuntime = d.$1, refresh),
+            ]),
+            const SizedBox(height: 16),
+            Text('GENRES', style: DF.sans(11, c: DF.inkSoft, w: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final g in kFilterGenres)
+                chip(g.$2, tmpGenres.contains(g.$1),
+                    () => tmpGenres.contains(g.$1) ? tmpGenres.remove(g.$1) : tmpGenres.add(g.$1), refresh),
+            ]),
+            const SizedBox(height: 22),
+            PrimaryButton(label: 'Voir les films', onTap: () => Navigator.pop(ctx, true)),
+            Center(
+              child: TextButton(
+                onPressed: () { tmpRuntime = null; tmpGenres.clear(); Navigator.pop(ctx, true); },
+                child: Text('Tout réinitialiser', style: DF.sans(14, c: DF.secondary, w: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+    if (apply == true) {
+      setState(() {
+        _maxRuntime = tmpRuntime;
+        _genres..clear()..addAll(tmpGenres);
+        _deck.clear();
+        _seen.clear();
+        _loading = true;
+      });
+      await _load();
+    }
   }
 
   void _showMatch(Movie m) => showDialog(
@@ -587,10 +726,39 @@ class _DeckScreenState extends State<DeckScreen> {
     return Column(children: [
       Padding(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        child: Row(children: [
           const BrandRow(small: true),
+          const Spacer(),
+          if (_compat != null) ...[
+            Text('💞 $_compat%', style: DF.sans(12, c: DF.secondary, w: FontWeight.w800)),
+            const SizedBox(width: 10),
+          ],
           Text(widget.group != null ? 'Groupe · ${widget.group!['invite_code']}' : 'Solo',
               style: DF.sans(12, c: DF.inkSoft, w: FontWeight.w600)),
+          if (widget.group != null) ...[
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => SharePlus.instance.share(
+                  ShareParams(text: inviteMessage(widget.group!['invite_code'].toString()))),
+              child: Text('📤', style: DF.sans(16)),
+            ),
+          ],
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: _openFilters,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: _filterCount > 0 ? DF.accent : DF.surface,
+                borderRadius: BorderRadius.circular(99),
+              ),
+              child: Text(
+                _filterCount > 0 ? '⚙︎ Filtres · $_filterCount' : '⚙︎ Filtres',
+                style: DF.sans(12, w: FontWeight.w700,
+                    c: _filterCount > 0 ? DF.accentInk : DF.inkBody),
+              ),
+            ),
+          ),
         ]),
       ),
       Expanded(
@@ -617,6 +785,8 @@ class _DeckScreenState extends State<DeckScreen> {
       Padding(
         padding: const EdgeInsets.only(top: 18, bottom: 6),
         child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          RoundBtn(icon: '↩', bg: DF.muted, small: true, onTap: _undo),
+          const SizedBox(width: 16),
           RoundBtn(icon: '✕', bg: DF.surface, onTap: () => _swipe('nope')),
           const SizedBox(width: 20),
           RoundBtn(icon: '★', bg: DF.secondary, big: true, onTap: () => _swipe('super')),
@@ -626,7 +796,7 @@ class _DeckScreenState extends State<DeckScreen> {
       ),
       Padding(
         padding: const EdgeInsets.only(bottom: 14),
-        child: Text('✕ Passer      ★ Ma liste      ♥ J\'aime',
+        child: Text('↩ Annuler    ✕ Passer    ★ Coup de cœur    ♥ J\'aime',
             textAlign: TextAlign.center, style: DF.sans(11.5, c: DF.inkSoft, w: FontWeight.w600)),
       ),
     ]);
@@ -693,7 +863,7 @@ class MovieCard extends StatelessWidget {
               if (m.year != null) '${m.year}',
               if (m.runtime != null) '${m.runtime} min',
               if (m.rating > 0) '★ ${m.rating}',
-              ...m.genres.take(3),
+              ...m.genres.take(3).map(genreFr),
             ].join('  ·  '), style: DF.sans(13, c: const Color(0xFFE7DCFF), w: FontWeight.w600)),
             if (m.overview != null) ...[
               const SizedBox(height: 8),
@@ -1021,7 +1191,7 @@ class _DetailScreenState extends State<DetailScreen> {
               ],
               if (_genres.isNotEmpty) ...[
                 const SizedBox(height: 14),
-                Wrap(spacing: 8, runSpacing: 8, children: _genres.map(_chip).toList()),
+                Wrap(spacing: 8, runSpacing: 8, children: _genres.map((g) => _chip(genreFr(g))).toList()),
               ],
               if (_trailerKey != null) ...[
                 const SizedBox(height: 20),
@@ -1154,7 +1324,7 @@ class _LikedRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final sub = [
       if (m.year != null) '${m.year}',
-      ...m.genres.take(2),
+      ...m.genres.take(2).map(genreFr),
     ].join(' · ');
     return Material(
       color: DF.surface,
@@ -1188,6 +1358,292 @@ class _LikedRow extends StatelessWidget {
             const Icon(Icons.chevron_right, color: DF.inkSoft),
           ]),
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// À voir (groupe) : matchs communs, marquer vu + feedback, roulette du soir
+// ---------------------------------------------------------------------------
+class WatchlistScreen extends StatefulWidget {
+  final Map<String, dynamic> group;
+  const WatchlistScreen({super.key, required this.group});
+  @override
+  State<WatchlistScreen> createState() => _WatchlistScreenState();
+}
+
+class _WatchlistScreenState extends State<WatchlistScreen> {
+  List<Map<String, dynamic>> _rows = [];
+  bool _loading = true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final r = await Api.watchlist(widget.group['id'] as String);
+      if (mounted) setState(() { _rows = r; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Movie _movie(Map<String, dynamic> row) =>
+      Movie.fromJson(Map<String, dynamic>.from(row['df_movies'] as Map));
+
+  /// « Alors, ce film ? » — le feedback après un vrai visionnage est le
+  /// meilleur signal de goût : il est réinjecté dans les recommandations.
+  Future<void> _markWatched(Movie m) async {
+    final liked = await showDialog<bool?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: DF.surface,
+        title: Text('Alors, ${m.display} ?', style: DF.serif(22)),
+        content: Text('Votre avis affine vos prochaines recommandations.',
+            style: DF.sans(14, c: DF.inkBody)),
+        actionsAlignment: MainAxisAlignment.spaceBetween,
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Juste marquer vu', style: DF.sans(13, c: DF.inkSoft))),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text('👎 Déçu', style: DF.sans(14, w: FontWeight.w700, c: DF.inkBody))),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text('👍 Adoré', style: DF.sans(14, w: FontWeight.w700, c: DF.secondary))),
+          ]),
+        ],
+      ),
+    );
+    await Api.markWatched(widget.group['id'] as String, m.id, liked: liked);
+    await _load();
+  }
+
+  /// Roulette : fait défiler les affiches puis s'arrête sur un film au hasard.
+  void _roulette(List<Movie> movies) {
+    Timer? timer;
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        var pick = movies.first;
+        return StatefulBuilder(builder: (ctx, refresh) {
+          void spin() {
+            timer?.cancel();
+            var i = 0;
+            final steps = 14 + Random().nextInt(8);
+            timer = Timer.periodic(const Duration(milliseconds: 110), (t) {
+              refresh(() => pick = movies[i % movies.length]);
+              i++;
+              if (i >= steps) t.cancel();
+            });
+          }
+          if (timer == null) spin();
+          return AlertDialog(
+            backgroundColor: DF.surface,
+            title: Text('Ce soir, c\'est…', style: DF.serif(22, c: DF.secondary)),
+            content: Column(mainAxisSize: MainAxisSize.min, children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: SizedBox(
+                  width: 150, height: 225,
+                  child: pick.poster != null
+                      ? Image.network(pick.poster!, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                      : Container(color: DF.muted),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(pick.display, textAlign: TextAlign.center, style: DF.sans(15, w: FontWeight.w700)),
+            ]),
+            actions: [
+              TextButton(onPressed: spin, child: Text('🎲 Relancer', style: DF.sans(14, c: DF.inkBody, w: FontWeight.w700))),
+              TextButton(
+                  onPressed: () { timer?.cancel(); Navigator.pop(ctx); },
+                  child: Text('🍿 C\'est parti', style: DF.sans(14, c: DF.secondary, w: FontWeight.w800))),
+            ],
+          );
+        });
+      },
+    ).then((_) => timer?.cancel());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(color: DF.accent));
+    final unwatched = _rows.where((r) => r['watched'] != true).toList();
+    final watched = _rows.where((r) => r['watched'] == true).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('À regarder ensemble', style: DF.serif(28)),
+          if (unwatched.length >= 2) ...[
+            const SizedBox(height: 12),
+            PrimaryButton(
+                label: '🎲 On regarde quoi ce soir ?',
+                onTap: () => _roulette(unwatched.map(_movie).toList())),
+          ],
+        ]),
+      ),
+      Expanded(
+        child: _rows.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(40),
+                  child: Text('Rien pour l\'instant.\nSwipez pour trouver des films en commun !',
+                      textAlign: TextAlign.center, style: DF.sans(15, c: DF.inkSoft)),
+                ),
+              )
+            : ListView(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 20),
+                children: [
+                  ...unwatched.map((r) => _row(_movie(r), watched: false)),
+                  if (watched.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 18, 6, 8),
+                      child: Text('DÉJÀ VUS', style: DF.sans(11, c: DF.inkSoft, w: FontWeight.w800)),
+                    ),
+                    ...watched.map((r) => _row(_movie(r), watched: true)),
+                  ],
+                ],
+              ),
+      ),
+    ]);
+  }
+
+  Widget _row(Movie m, {required bool watched}) {
+    final sub = [
+      if (m.year != null) '${m.year}',
+      ...m.genres.take(2).map(genreFr),
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: DF.surface,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: SizedBox(
+                  width: 54, height: 80,
+                  child: m.poster != null
+                      ? Image.network(m.poster!, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                      : Container(color: DF.muted, child: const Center(child: Text('🎬', style: TextStyle(fontSize: 24)))),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                  Text(m.display, maxLines: 2, overflow: TextOverflow.ellipsis, style: DF.sans(15.5, w: FontWeight.w700)),
+                  if (sub.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: DF.sans(13, c: DF.inkSoft)),
+                  ],
+                ]),
+              ),
+              watched
+                  ? Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Text('✓ vu', style: DF.sans(13, c: DF.teal, w: FontWeight.w700)))
+                  : TextButton(
+                      onPressed: () => _markWatched(m),
+                      child: Text('Vu ?', style: DF.sans(13, c: DF.teal, w: FontWeight.w800))),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Profil ciné : répartition des genres aimés
+// ---------------------------------------------------------------------------
+class StatsScreen extends StatefulWidget {
+  const StatsScreen({super.key});
+  @override
+  State<StatsScreen> createState() => _StatsScreenState();
+}
+
+class _StatsScreenState extends State<StatsScreen> {
+  Map<String, dynamic>? _stats;
+  bool _loading = true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final s = await Api.tasteStats();
+      if (mounted) setState(() { _stats = s; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final genres = ((_stats?['genres'] ?? []) as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    final maxN = genres.isEmpty ? 1 : (genres.first['n'] as num).toInt();
+    return Scaffold(
+      appBar: AppBar(backgroundColor: DF.bg, elevation: 0, iconTheme: const IconThemeData(color: DF.ink)),
+      body: SafeArea(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator(color: DF.accent))
+            : Padding(
+                padding: const EdgeInsets.all(24),
+                child: genres.isEmpty
+                    ? Center(
+                        child: Text('Swipez quelques films pour découvrir votre profil 🎬',
+                            textAlign: TextAlign.center, style: DF.sans(15, c: DF.inkSoft)))
+                    : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('Vos goûts en un coup d\'œil', style: DF.serif(26)),
+                        const SizedBox(height: 8),
+                        Text('${_stats?['likes'] ?? 0} films aimés sur ${_stats?['swipes'] ?? 0} swipés.',
+                            style: DF.sans(14, c: DF.inkBody)),
+                        const SizedBox(height: 22),
+                        for (final g in genres)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Row(children: [
+                              SizedBox(
+                                  width: 92,
+                                  child: Text(genreFr(g['genre'].toString()),
+                                      style: DF.sans(13.5, w: FontWeight.w700))),
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: LinearProgressIndicator(
+                                    value: ((g['n'] as num) / maxN).clamp(0.05, 1).toDouble(),
+                                    minHeight: 12,
+                                    backgroundColor: DF.muted,
+                                    color: DF.accent,
+                                  ),
+                                ),
+                              ),
+                              SizedBox(
+                                  width: 34,
+                                  child: Text('${g['n']}',
+                                      textAlign: TextAlign.right,
+                                      style: DF.sans(12, c: DF.inkSoft, w: FontWeight.w700))),
+                            ]),
+                          ),
+                        const SizedBox(height: 12),
+                        Text('En groupe, votre compatibilité de goûts s\'affiche en haut du deck 💞',
+                            style: DF.sans(12.5, c: DF.inkSoft)),
+                      ]),
+              ),
       ),
     );
   }
@@ -1322,6 +1778,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         Text('Réglages', style: DF.serif(28)),
 
+        // --- PROFIL CINÉ ---
+        _section('Profil', [
+          Material(
+            color: DF.surface,
+            borderRadius: BorderRadius.circular(18),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const StatsScreen())),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(children: [
+                  const Text('📊', style: TextStyle(fontSize: 22)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('Mon profil ciné', style: DF.sans(15.5, w: FontWeight.w700)),
+                      const SizedBox(height: 2),
+                      Text('Vos genres préférés, en un coup d\'œil', style: DF.sans(12.5, c: DF.inkSoft)),
+                    ]),
+                  ),
+                  const Icon(Icons.chevron_right, color: DF.inkSoft),
+                ]),
+              ),
+            ),
+          ),
+        ]),
+
         // --- COMPTE ---
         _section('Compte', [
           _card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1449,8 +1933,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           side: const BorderSide(color: DF.secondary),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
                       onPressed: () => SharePlus.instance.share(
-                          ShareParams(text: 'Rejoins mon groupe Duomovie avec le code : $code')),
-                      child: Text('Partager le code', style: DF.sans(13, w: FontWeight.w700, c: DF.secondary)),
+                          ShareParams(text: inviteMessage(code))),
+                      child: Text('Inviter', style: DF.sans(13, w: FontWeight.w700, c: DF.secondary)),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1595,19 +2079,23 @@ class RoundBtn extends StatelessWidget {
   final String icon;
   final Color bg;
   final bool big;
+  final bool small;
   final VoidCallback onTap;
-  const RoundBtn({super.key, required this.icon, required this.bg, required this.onTap, this.big = false});
+  const RoundBtn({super.key, required this.icon, required this.bg, required this.onTap, this.big = false, this.small = false});
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: Container(
-          width: big ? 62 : 54, height: big ? 62 : 54,
-          decoration: BoxDecoration(color: bg, shape: BoxShape.circle, boxShadow: [
-            BoxShadow(color: bg.withValues(alpha: .5), blurRadius: 20, offset: const Offset(0, 8)),
-          ]),
-          child: Center(child: Text(icon, style: TextStyle(fontSize: big ? 26 : 22, color: Colors.white))),
-        ),
-      );
+  Widget build(BuildContext context) {
+    final size = big ? 62.0 : (small ? 42.0 : 54.0);
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: size, height: size,
+        decoration: BoxDecoration(color: bg, shape: BoxShape.circle, boxShadow: [
+          BoxShadow(color: bg.withValues(alpha: .5), blurRadius: 20, offset: const Offset(0, 8)),
+        ]),
+        child: Center(child: Text(icon, style: TextStyle(fontSize: big ? 26 : (small ? 17 : 22), color: Colors.white))),
+      ),
+    );
+  }
 }
 
 class SegmentedControl extends StatelessWidget {
