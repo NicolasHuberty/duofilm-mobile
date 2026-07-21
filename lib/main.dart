@@ -293,6 +293,28 @@ String inviteMessage(String code) =>
     'Rejoins-moi sur Duofilm pour choisir le film du soir 🍿\n'
     'Code : $code\nhttps://duofilm.huberty.pro?join=$code';
 
+/// Deep links « regarder ce soir » : recherche du titre sur la plateforme.
+const kProvUrls = {
+  'netflix': 'https://www.netflix.com/search?q=',
+  'prime': 'https://www.primevideo.com/search?phrase=',
+  'disney': 'https://www.disneyplus.com/search?q=',
+  'canal': 'https://www.canalplus.com/recherche?query=',
+  'hbo': 'https://play.max.com/search/result?q=',
+  'apple': 'https://tv.apple.com/fr/search?term=',
+  'arte': 'https://www.arte.tv/fr/search/?q=',
+  'orange': 'https://www.orange.fr/recherche?domain=videos&query=',
+};
+Future<void> openOnProvider(String code, Movie m) async {
+  final base = kProvUrls[code];
+  if (base == null) return;
+  final url = Uri.parse(base + Uri.encodeComponent(m.display));
+  await launchUrl(url, mode: LaunchMode.externalApplication);
+}
+
+/// Lien public d'une liste partagée.
+String listShareMessage(String name, String code) =>
+    'Ma liste « $name » sur Duofilm 🍿\nhttps://duofilm.huberty.pro?list=$code';
+
 class ProvidersScreen extends StatefulWidget {
   const ProvidersScreen({super.key});
   @override
@@ -306,7 +328,11 @@ class _ProvidersScreenState extends State<ProvidersScreen> {
   Future<void> _save() async {
     setState(() => _busy = true);
     await Api.setProviders(_sel.toList());
-    if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+    // Nouveau profil (aucun swipe) → onboarding goût express.
+    final n = await Api.swipeCount();
+    if (!mounted) return;
+    Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => n == 0 ? const StarterScreen() : const HomeScreen()));
   }
 
   @override
@@ -527,19 +553,23 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     final isGroup = widget.group != null;
+    // 5 onglets max : en groupe, « À voir » remplace « Listes »
+    // (les listes restent accessibles depuis Réglages).
     final pages = [
       DeckScreen(group: widget.group),
+      const SearchScreen(),
       ForYouScreen(group: widget.group),
-      if (isGroup) WatchlistScreen(group: widget.group!),
-      const LikedScreen(),
+      if (isGroup) WatchlistScreen(group: widget.group!) else const ListsScreen(),
       const SettingsScreen(),
     ];
     final destinations = [
       const NavigationDestination(icon: Text('🎬', style: TextStyle(fontSize: 20)), label: 'Découvrir'),
+      const NavigationDestination(icon: Text('🔍', style: TextStyle(fontSize: 20)), label: 'Recherche'),
       const NavigationDestination(icon: Text('⭐', style: TextStyle(fontSize: 20)), label: 'Pour vous'),
       if (isGroup)
-        const NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'À voir'),
-      const NavigationDestination(icon: Text('❤️', style: TextStyle(fontSize: 20)), label: 'Ma liste'),
+        const NavigationDestination(icon: Text('🍿', style: TextStyle(fontSize: 20)), label: 'À voir')
+      else
+        const NavigationDestination(icon: Text('❤️', style: TextStyle(fontSize: 20)), label: 'Listes'),
       const NavigationDestination(icon: Text('⚙️', style: TextStyle(fontSize: 20)), label: 'Réglages'),
     ];
     return Scaffold(
@@ -857,6 +887,17 @@ class MovieCard extends StatelessWidget {
         Positioned(
           left: 20, right: 20, bottom: 20,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (m.because != null) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color: const Color(0x730B0812), borderRadius: BorderRadius.circular(99)),
+                child: Text('💡 Parce que vous avez aimé ${m.because}',
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: DF.sans(11.5, c: DF.secondary, w: FontWeight.w700)),
+              ),
+              const SizedBox(height: 7),
+            ],
             Text(m.display, style: DF.serif(26, c: Colors.white)),
             const SizedBox(height: 6),
             Text([
@@ -1118,6 +1159,19 @@ class _DetailScreenState extends State<DetailScreen> {
         child: Text(label, style: DF.sans(12.5, c: DF.inkBody, w: FontWeight.w600)),
       );
 
+  Widget _actionBtn(String label, VoidCallback onTap) => SizedBox(
+        height: 44,
+        child: OutlinedButton(
+          style: OutlinedButton.styleFrom(
+              foregroundColor: DF.ink,
+              side: const BorderSide(color: DF.muted),
+              padding: EdgeInsets.zero,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+          onPressed: onTap,
+          child: Text(label, style: DF.sans(12.5, w: FontWeight.w700, c: DF.ink)),
+        ),
+      );
+
   Widget _castChip((String, String?) c) => Container(
         constraints: const BoxConstraints(maxWidth: 160),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1208,6 +1262,23 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ],
+              const SizedBox(height: 14),
+              Row(children: [
+                Expanded(child: _actionBtn('✨ Similaires', () {
+                  Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => SimilarScreen(m: m)));
+                })),
+                const SizedBox(width: 8),
+                Expanded(child: _actionBtn('➕ Liste', () => showListPicker(context, m))),
+                const SizedBox(width: 8),
+                Expanded(child: _actionBtn('❤ J\'aime', () async {
+                  await Api.swipe(m.id, 'like');
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Ajouté à vos goûts ❤')));
+                  }
+                })),
+              ]),
               if (directors.isNotEmpty)
                 _section(directors.length > 1 ? 'Réalisateurs' : 'Réalisation',
                     Text(directors.join(', '), style: DF.sans(14.5, c: DF.ink, w: FontWeight.w600))),
@@ -1218,12 +1289,655 @@ class _DetailScreenState extends State<DetailScreen> {
                 _section('Synopsis',
                     Text(_overview!, style: DF.sans(14.5, c: DF.inkBody).copyWith(height: 1.5))),
               if (m.providers.isNotEmpty)
-                _section('Disponible sur',
-                    Wrap(spacing: 8, runSpacing: 8, children: m.providers.map((p) => _chip(_providerLabel(p))).toList())),
+                _section('Regarder sur',
+                    Wrap(spacing: 8, runSpacing: 8, children: m.providers.map((p) => GestureDetector(
+                          onTap: () => openOnProvider(p, m),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+                            decoration: BoxDecoration(
+                                color: DF.accent.withValues(alpha: .16),
+                                borderRadius: BorderRadius.circular(99),
+                                border: Border.all(color: DF.accent.withValues(alpha: .45))),
+                            child: Text('▶ ${_providerLabel(p)}',
+                                style: DF.sans(12.5, c: DF.ink, w: FontWeight.w700)),
+                          ),
+                        )).toList())),
             ]),
           ),
         ),
       ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recherche universelle : titre ou ambiance (« braquage casino »)
+// ---------------------------------------------------------------------------
+class SearchScreen extends StatefulWidget {
+  const SearchScreen({super.key});
+  @override
+  State<SearchScreen> createState() => _SearchScreenState();
+}
+
+class _SearchScreenState extends State<SearchScreen> {
+  final _c = TextEditingController();
+  Timer? _debounce;
+  List<Movie> _results = [];
+  bool _searching = false;
+  int _seq = 0;
+
+  @override
+  void dispose() { _debounce?.cancel(); _c.dispose(); super.dispose(); }
+
+  void _onChanged(String v) {
+    _debounce?.cancel();
+    final q = v.trim();
+    if (q.length < 2) return;
+    _debounce = Timer(const Duration(milliseconds: 300), () async {
+      final my = ++_seq;
+      setState(() => _searching = true);
+      try {
+        final r = await Api.search(q);
+        if (mounted && my == _seq) setState(() { _results = r; _searching = false; });
+      } catch (_) {
+        if (mounted && my == _seq) setState(() => _searching = false);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Recherche', style: DF.serif(28)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _c,
+              onChanged: _onChanged,
+              autofocus: false,
+              style: DF.sans(15),
+              decoration: InputDecoration(
+                hintText: 'Titre, ou ambiance : « braquage casino »…',
+                hintStyle: DF.sans(14, c: DF.inkSoft),
+                prefixIcon: const Icon(Icons.search, color: DF.inkSoft, size: 20),
+                filled: true,
+                fillColor: DF.surface,
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.muted)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: DF.accent, width: 2)),
+              ),
+            ),
+          ]),
+        ),
+        Expanded(
+          child: _searching
+              ? const Center(child: CircularProgressIndicator(color: DF.accent))
+              : _results.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(40),
+                        child: Text(
+                            'Cherchez un titre précis, ou décrivez une envie :\n« comédie mariage », « tueur en série années 90 »…',
+                            textAlign: TextAlign.center, style: DF.sans(14, c: DF.inkSoft)),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(14, 4, 14, 20),
+                      itemCount: _results.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, i) => MovieRow(m: _results[i]),
+                    ),
+        ),
+      ]);
+}
+
+// Rangée film réutilisable (recherche, listes, similaires).
+class MovieRow extends StatelessWidget {
+  final Movie m;
+  final Widget? trailing;
+  const MovieRow({super.key, required this.m, this.trailing});
+  @override
+  Widget build(BuildContext context) {
+    final sub = [
+      if (m.year != null) '${m.year}',
+      ...m.genres.take(2).map(genreFr),
+    ].join(' · ');
+    return Material(
+      color: DF.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 54, height: 80,
+                child: m.poster != null
+                    ? Image.network(m.poster!, fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                    : Container(color: DF.muted, child: const Center(child: Text('🎬', style: TextStyle(fontSize: 24)))),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(m.display, maxLines: 2, overflow: TextOverflow.ellipsis, style: DF.sans(15.5, w: FontWeight.w700)),
+                if (sub.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: DF.sans(13, c: DF.inkSoft)),
+                ],
+              ]),
+            ),
+            trailing ?? const Icon(Icons.chevron_right, color: DF.inkSoft),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Films similaires
+// ---------------------------------------------------------------------------
+class SimilarScreen extends StatelessWidget {
+  final Movie m;
+  const SimilarScreen({super.key, required this.m});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: DF.bg, elevation: 0,
+          iconTheme: const IconThemeData(color: DF.ink),
+          title: Text('Dans la même veine', style: DF.serif(20)),
+        ),
+        body: FutureBuilder<List<Movie>>(
+          future: Api.similar(m.id),
+          builder: (_, snap) {
+            if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: DF.accent));
+            return ListView.separated(
+              padding: const EdgeInsets.all(14),
+              itemCount: snap.data!.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (_, i) => MovieRow(m: snap.data![i]),
+            );
+          },
+        ),
+      );
+}
+
+// ---------------------------------------------------------------------------
+// Listes multiples : picker, hub, détail
+// ---------------------------------------------------------------------------
+Future<void> showListPicker(BuildContext context, Movie m) async {
+  final lists = await Api.myLists();
+  if (!context.mounted) return;
+  await showModalBottomSheet(
+    context: context,
+    backgroundColor: DF.bg,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+    builder: (ctx) => Padding(
+      padding: const EdgeInsets.fromLTRB(22, 22, 22, 34),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Ajouter à une liste', style: DF.serif(22)),
+        const SizedBox(height: 14),
+        if (lists.isEmpty)
+          Text('Aucune liste — créez la première !', style: DF.sans(14, c: DF.inkSoft)),
+        ...lists.map((l) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Material(
+                color: DF.surface,
+                borderRadius: BorderRadius.circular(16),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () async {
+                    final added = await Api.addToList(l['id'].toString(), m.id);
+                    if (ctx.mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                          content: Text(added
+                              ? 'Ajouté à « ${l['name']} » 🍿'
+                              : 'Déjà dans « ${l['name']} »')));
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Row(children: [
+                      const Text('🍿', style: TextStyle(fontSize: 18)),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(l['name'].toString(), style: DF.sans(15, w: FontWeight.w700))),
+                    ]),
+                  ),
+                ),
+              ),
+            )),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            style: OutlinedButton.styleFrom(
+                foregroundColor: DF.ink,
+                side: const BorderSide(color: DF.muted),
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+            onPressed: () async {
+              final name = await promptListName(ctx);
+              if (name == null || !ctx.mounted) return;
+              final l = await Api.createList(name);
+              final added = await Api.addToList(l['id'].toString(), m.id);
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                    content: Text(added ? 'Ajouté à « $name » 🍿' : 'Déjà dans « $name »')));
+              }
+            },
+            child: Text('＋ Nouvelle liste', style: DF.sans(14, w: FontWeight.w700, c: DF.ink)),
+          ),
+        ),
+      ]),
+    ),
+  );
+}
+
+Future<String?> promptListName(BuildContext context) {
+  final c = TextEditingController();
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: DF.surface,
+      title: Text('Nouvelle liste', style: DF.sans(16, w: FontWeight.w700)),
+      content: TextField(
+        controller: c, autofocus: true, style: DF.sans(16), maxLength: 60,
+        decoration: InputDecoration(
+            hintText: 'Soirées Halloween…', hintStyle: DF.sans(14, c: DF.inkSoft)),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Annuler', style: DF.sans(14, c: DF.inkSoft))),
+        TextButton(
+            onPressed: () {
+              final v = c.text.trim();
+              Navigator.pop(ctx, v.isEmpty ? null : v);
+            },
+            child: Text('Créer', style: DF.sans(14, c: DF.secondary, w: FontWeight.w700))),
+      ],
+    ),
+  );
+}
+
+class ListsScreen extends StatefulWidget {
+  const ListsScreen({super.key});
+  @override
+  State<ListsScreen> createState() => _ListsScreenState();
+}
+
+class _ListsScreenState extends State<ListsScreen> {
+  List<Movie> _watchNow = [];
+  List<Map<String, dynamic>> _lists = [];
+  int _likes = 0;
+  bool _loading = true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final now = await Api.watchNow();
+      final lists = await Api.myLists();
+      final stats = await Api.tasteStats();
+      if (mounted) {
+        setState(() {
+          _watchNow = now;
+          _lists = lists;
+          _likes = (stats['likes'] as num?)?.toInt() ?? 0;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  int _count(Map<String, dynamic> l) {
+    final items = l['df_list_items'];
+    if (items is List && items.isNotEmpty && items.first is Map) {
+      return ((items.first as Map)['count'] as num?)?.toInt() ?? 0;
+    }
+    return 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(color: DF.accent));
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
+      children: [
+        Text('Mes listes', style: DF.serif(28)),
+        if (_watchNow.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('🎬 À REGARDER CE SOIR', style: DF.sans(11, c: DF.secondary, w: FontWeight.w800)),
+          Text('Likés ou listés, dispo sur vos plateformes', style: DF.sans(11.5, c: DF.inkSoft)),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 190,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _watchNow.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (_, i) {
+                final m = _watchNow[i];
+                return GestureDetector(
+                  onTap: () => Navigator.push(
+                      context, MaterialPageRoute(builder: (_) => DetailScreen(m: m))),
+                  child: SizedBox(
+                    width: 96,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: SizedBox(
+                          width: 96, height: 144,
+                          child: m.poster != null
+                              ? Image.network(m.poster!, fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                              : Container(color: DF.muted),
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(m.display, maxLines: 2, overflow: TextOverflow.ellipsis,
+                          style: DF.sans(11, c: DF.inkBody, w: FontWeight.w700)),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        _hubRow('❤️', 'Mes coups de cœur', '$_likes film${_likes > 1 ? 's' : ''} · automatique',
+            () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LikedScreenPage()))
+                .then((_) => _load())),
+        ..._lists.map((l) {
+          final n = _count(l);
+          return _hubRow('🍿', l['name'].toString(),
+              '$n film${n > 1 ? 's' : ''}${l['is_public'] == true ? ' · 🔗 partagée' : ''}',
+              () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => ListDetailScreen(list: l)))
+                  .then((_) => _load()));
+        }),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          style: OutlinedButton.styleFrom(
+              foregroundColor: DF.ink,
+              side: const BorderSide(color: DF.muted),
+              padding: const EdgeInsets.symmetric(vertical: 13),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+          onPressed: () async {
+            final name = await promptListName(context);
+            if (name == null) return;
+            await Api.createList(name);
+            _load();
+          },
+          child: Text('＋ Créer une liste', style: DF.sans(14, w: FontWeight.w700, c: DF.ink)),
+        ),
+      ],
+    );
+  }
+
+  Widget _hubRow(String emoji, String title, String sub, VoidCallback onTap) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Material(
+          color: DF.surface,
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(children: [
+                Text(emoji, style: const TextStyle(fontSize: 22)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(title, style: DF.sans(15.5, w: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(sub, style: DF.sans(12.5, c: DF.inkSoft)),
+                  ]),
+                ),
+                const Icon(Icons.chevron_right, color: DF.inkSoft),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
+/// Version « page » de l'écran des likes (poussée depuis le hub des listes).
+class LikedScreenPage extends StatelessWidget {
+  const LikedScreenPage({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: DF.bg, elevation: 0,
+          iconTheme: const IconThemeData(color: DF.ink),
+        ),
+        body: const LikedScreen(),
+      );
+}
+
+class ListDetailScreen extends StatefulWidget {
+  final Map<String, dynamic> list;
+  const ListDetailScreen({super.key, required this.list});
+  @override
+  State<ListDetailScreen> createState() => _ListDetailScreenState();
+}
+
+class _ListDetailScreenState extends State<ListDetailScreen> {
+  List<Movie> _items = [];
+  bool _loading = true;
+  late bool _isPublic = widget.list['is_public'] == true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    final r = await Api.listItems(widget.list['id'].toString());
+    if (mounted) setState(() { _items = r; _loading = false; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.list['name'].toString();
+    final code = widget.list['share_code'].toString();
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: DF.bg, elevation: 0,
+        iconTheme: const IconThemeData(color: DF.ink),
+        title: Text(name, style: DF.serif(20)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: DF.inkSoft),
+            onPressed: () async {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: DF.surface,
+                  title: Text('Supprimer « $name » ?', style: DF.sans(16, w: FontWeight.w700)),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('Annuler', style: DF.sans(14, c: DF.inkSoft))),
+                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('Supprimer', style: DF.sans(14, c: DF.accent, w: FontWeight.w700))),
+                  ],
+                ),
+              );
+              if (ok == true) {
+                await Api.deleteList(widget.list['id'].toString());
+                if (context.mounted) Navigator.pop(context);
+              }
+            },
+          ),
+        ],
+      ),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
+          child: Row(children: [
+            Expanded(
+              child: Text('Liste publique (lien de partage)', style: DF.sans(13.5, w: FontWeight.w600, c: DF.inkBody)),
+            ),
+            Switch(
+              value: _isPublic,
+              onChanged: (v) async {
+                setState(() => _isPublic = v);
+                await Api.setListPublic(widget.list['id'].toString(), v);
+              },
+              activeThumbColor: DF.accentInk,
+              activeTrackColor: DF.accent,
+              inactiveThumbColor: DF.inkSoft,
+              inactiveTrackColor: DF.muted,
+            ),
+            if (_isPublic)
+              IconButton(
+                icon: const Icon(Icons.ios_share, color: DF.secondary, size: 20),
+                onPressed: () => SharePlus.instance.share(
+                    ShareParams(text: listShareMessage(name, code))),
+              ),
+          ]),
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator(color: DF.accent))
+              : _items.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(40),
+                        child: Text('Liste vide — ajoutez des films depuis la recherche ou une fiche (➕ Liste).',
+                            textAlign: TextAlign.center, style: DF.sans(14, c: DF.inkSoft)),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(14),
+                      itemCount: _items.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, i) {
+                        final m = _items[i];
+                        return MovieRow(
+                          m: m,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close, color: DF.inkSoft, size: 20),
+                            onPressed: () async {
+                              await Api.removeFromList(widget.list['id'].toString(), m.id);
+                              setState(() => _items.removeAt(i));
+                            },
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding goût express : 3 films cultes suffisent à amorcer le profil
+// ---------------------------------------------------------------------------
+class StarterScreen extends StatefulWidget {
+  const StarterScreen({super.key});
+  @override
+  State<StarterScreen> createState() => _StarterScreenState();
+}
+
+class _StarterScreenState extends State<StarterScreen> {
+  List<Movie> _movies = [];
+  final Set<String> _chosen = {};
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Api.starterMovies().then((m) { if (mounted) setState(() => _movies = m); });
+  }
+
+  Future<void> _go() async {
+    setState(() => _busy = true);
+    for (final id in _chosen) {
+      await Api.swipe(id, 'like');
+    }
+    if (mounted) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = _chosen.length;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const SizedBox(height: 8),
+            Text('3 films que vous adorez ?', style: DF.serif(28)),
+            const SizedBox(height: 8),
+            Text('Touchez au moins 3 films cultes que vous aimez : vos recommandations démarrent au bon endroit.',
+                style: DF.sans(14, c: DF.inkBody)),
+            const SizedBox(height: 16),
+            Expanded(
+              child: _movies.isEmpty
+                  ? const Center(child: CircularProgressIndicator(color: DF.accent))
+                  : GridView.builder(
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3, childAspectRatio: 2 / 3, mainAxisSpacing: 9, crossAxisSpacing: 9),
+                      itemCount: _movies.length,
+                      itemBuilder: (_, i) {
+                        final m = _movies[i];
+                        final on = _chosen.contains(m.id);
+                        return GestureDetector(
+                          onTap: () => setState(() => on ? _chosen.remove(m.id) : _chosen.add(m.id)),
+                          child: Stack(fit: StackFit.expand, children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: m.poster != null
+                                  ? Image.network(m.poster!, fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(color: DF.muted))
+                                  : Container(color: DF.muted),
+                            ),
+                            if (on) ...[
+                              Container(
+                                decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(color: DF.secondary, width: 3)),
+                              ),
+                              const Positioned(
+                                top: 6, right: 6,
+                                child: CircleAvatar(
+                                    radius: 12, backgroundColor: DF.secondary,
+                                    child: Text('✓', style: TextStyle(fontSize: 13, color: DF.secondaryInk, fontWeight: FontWeight.w800))),
+                              ),
+                            ],
+                          ]),
+                        );
+                      },
+                    ),
+            ),
+            const SizedBox(height: 14),
+            PrimaryButton(
+              label: _busy
+                  ? '…'
+                  : (n >= 3 ? 'C\'est parti ($n films) 🎬' : 'Choisissez encore ${3 - n} film${3 - n > 1 ? 's' : ''}'),
+              busy: _busy,
+              onTap: n >= 3 ? _go : () {},
+            ),
+            TextButton(
+              onPressed: _busy ? null : () => Navigator.pushReplacement(
+                  context, MaterialPageRoute(builder: (_) => const HomeScreen())),
+              child: Text('Passer, je préfère swiper', style: DF.sans(14, c: DF.inkSoft, w: FontWeight.w600)),
+            ),
+          ]),
+        ),
+      ),
     );
   }
 }
@@ -1770,6 +2484,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: child,
       );
 
+  Widget _navRow(String emoji, String title, String sub, VoidCallback onTap) => Material(
+        color: DF.surface,
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(children: [
+              Text(emoji, style: const TextStyle(fontSize: 22)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: DF.sans(15.5, w: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text(sub, style: DF.sans(12.5, c: DF.inkSoft)),
+                ]),
+              ),
+              const Icon(Icons.chevron_right, color: DF.inkSoft),
+            ]),
+          ),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator(color: DF.accent));
@@ -1778,32 +2516,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         Text('Réglages', style: DF.serif(28)),
 
-        // --- PROFIL CINÉ ---
+        // --- PROFIL CINÉ + LISTES ---
         _section('Profil', [
-          Material(
-            color: DF.surface,
-            borderRadius: BorderRadius.circular(18),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(18),
-              onTap: () => Navigator.push(
-                  context, MaterialPageRoute(builder: (_) => const StatsScreen())),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(children: [
-                  const Text('📊', style: TextStyle(fontSize: 22)),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Mon profil ciné', style: DF.sans(15.5, w: FontWeight.w700)),
-                      const SizedBox(height: 2),
-                      Text('Vos genres préférés, en un coup d\'œil', style: DF.sans(12.5, c: DF.inkSoft)),
-                    ]),
-                  ),
-                  const Icon(Icons.chevron_right, color: DF.inkSoft),
-                ]),
-              ),
-            ),
-          ),
+          _navRow('📊', 'Mon profil ciné', 'Vos genres préférés, en un coup d\'œil',
+              () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsScreen()))),
+          const SizedBox(height: 10),
+          _navRow('🍿', 'Mes listes', 'Vos coups de cœur et listes partageables',
+              () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                        appBar: AppBar(backgroundColor: DF.bg, elevation: 0, iconTheme: const IconThemeData(color: DF.ink)),
+                        body: const ListsScreen(),
+                      )))),
         ]),
 
         // --- COMPTE ---

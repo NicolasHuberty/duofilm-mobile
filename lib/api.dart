@@ -6,7 +6,7 @@ const supabaseAnonKey = 'sb_publishable_VwgG_Pvvhtb4dgC5eK52Og_gk2_D0pa';
 
 class Movie {
   final String id, title;
-  final String? titleFr, overview, poster, backdrop;
+  final String? titleFr, overview, poster, backdrop, because;
   final int? year, runtime, tmdbId, votes;
   final double affinity, rating;
   final bool exploratory;
@@ -18,6 +18,7 @@ class Movie {
         titleFr = j['title_fr'] as String?,
         overview = j['overview'] as String?,
         poster = j['poster'] as String?,
+        because = j['because'] as String?,
         backdrop = j['backdrop'] as String?,
         year = j['year'] as int?,
         runtime = j['runtime'] as int?,
@@ -117,6 +118,70 @@ class Api {
   /// Profil ciné : {likes, swipes, genres: [{genre, n}], compat: int?}.
   static Future<Map<String, dynamic>> tasteStats({String? group}) async =>
       Map<String, dynamic>.from(await _c.rpc('df_taste_stats', params: {'p_group': group}));
+
+  /// Recherche universelle : titre (tolérant) OU ambiance (plein-texte synopsis).
+  static Future<List<Movie>> search(String query, {int limit = 25}) async =>
+      _movies(await _c.rpc('df_search', params: {'p_query': query, 'p_limit': limit}));
+
+  /// Films similaires (voisinage vectoriel).
+  static Future<List<Movie>> similar(String movieId, {int limit = 12}) async =>
+      _movies(await _c.rpc('df_similar', params: {'p_movie': movieId, 'p_limit': limit}));
+
+  /// Films cultes variés pour l'onboarding goût express.
+  static Future<List<Movie>> starterMovies() async =>
+      _movies(await _c.rpc('df_starter_movies'));
+
+  /// Films likés / mis en liste ET disponibles sur mes plateformes.
+  static Future<List<Movie>> watchNow({int limit = 15}) async =>
+      _movies(await _c.rpc('df_watch_now', params: {'p_limit': limit}));
+
+  // ----- Listes multiples -----
+  static Future<List<Map<String, dynamic>>> myLists() async {
+    final r = await _c.from('df_lists').select('*, df_list_items(count)').order('created_at');
+    return (r as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  static Future<Map<String, dynamic>> createList(String name) async =>
+      Map<String, dynamic>.from(
+          await _c.from('df_lists').insert({'name': name}).select().single());
+
+  /// Ajoute un film à une liste. Renvoie false si déjà présent.
+  static Future<bool> addToList(String listId, String movieId) async {
+    try {
+      await _c.from('df_list_items').insert({'list_id': listId, 'movie_id': movieId});
+      return true;
+    } on PostgrestException catch (e) {
+      if (e.code == '23505') return false;
+      rethrow;
+    }
+  }
+
+  static Future<void> removeFromList(String listId, String movieId) =>
+      _c.from('df_list_items').delete().eq('list_id', listId).eq('movie_id', movieId);
+
+  static Future<List<Movie>> listItems(String listId) async {
+    final r = await _c
+        .from('df_list_items')
+        .select('added_at, df_movies(*)')
+        .eq('list_id', listId)
+        .order('added_at', ascending: false);
+    return (r as List)
+        .map((e) => e['df_movies'])
+        .where((e) => e != null)
+        .map((e) => Movie.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+  }
+
+  static Future<void> setListPublic(String listId, bool isPublic) =>
+      _c.from('df_lists').update({'is_public': isPublic}).eq('id', listId);
+
+  static Future<void> deleteList(String listId) =>
+      _c.from('df_lists').delete().eq('id', listId);
+
+  static Future<void> deleteSwipe(String movieId) async {
+    await _c.from('df_swipes').delete().eq('user_id', user!.id).eq('movie_id', movieId);
+    await _c.rpc('df_refresh_taste', params: {'p_user': user!.id});
+  }
 
   static Future<List<Movie>> forYou({double discovery = 0.0, bool onlyProviders = false}) async {
     final r = await _c.rpc('df_for_you', params: {
